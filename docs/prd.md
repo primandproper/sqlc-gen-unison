@@ -1,9 +1,10 @@
 # sqlc-gen-unison
 
-> **Status:** draft PRD. Working name — `unison` names the design invariant (every
-> dialect emits the same Go types, in unison); rename is a search-and-replace.
-> This document lives in platform-go only until the tool's repository exists,
-> then moves there as its founding design doc.
+> **Status:** implemented through milestone 1 (§12) and building its own output.
+> This is the founding design doc, kept current: where the code settled a
+> question differently than the first draft imagined, the code won and this
+> document was corrected. Sections marked **Settled** record a decision that is
+> pinned by a test; §12 is the only forward-looking section left.
 
 A sqlc codegen plugin and orchestrator that generates **one** set of Go types
 and **N** dialects' SQL from one logical query set, so that a store supporting
@@ -148,9 +149,10 @@ configs):
 
 ```yaml
 sqlc_version: 1.31.1
-dialects: [postgresql, mysql, sqlite]   # the roster — see §6
 package: identitydb
 out: internal/identitydb
+# The dialect roster (§6) is the set of keys below — omitting a dialect means
+# it is not analyzed and not emitted; there is no separate list to drift.
 schemas:
   postgresql: migrations/postgres.sql
   mysql: migrations/mysql.sql
@@ -161,13 +163,32 @@ queries:
   sqlite: queries/sqlite/
 options:
   table_prefix_var: true                # emit the {{prefix}} marker (§9)
+  null_as: pointer                      # or `sql`, for sql.Null*; pointer is the default
   type_overrides:
     - column: "*.scope"
       go_type: github.com/primandproper/platform-go/v13/tenancy.Scope
+  rename_params:                        # per dialect; see §7's LIMIT row
+    mysql:
+      limit: result_limit
 ```
+
+`sqlc_version` is enforced, not documentation: the orchestrator asks the sqlc on
+PATH for its version before anything runs and refuses to proceed on a mismatch.
+The CodeGenRequest protobuf is a moving target and the analysis it carries is the
+input to every shape decision here, so generating with a different sqlc is
+generating from a different analyzer.
 
 Queries carry the same **name and annotation** across dialects (`-- name:
 CreateUser :one` in all three files); the query name is the join key.
+
+Each invocation receives only its own dialect's analyzed catalog; nothing
+verifies the N schema documents describe the same logical schema. Drift a
+query observes is caught (a missing column fails that dialect's analysis; a
+differently-typed one diverges the shape and fails compilation — `SELECT *`
+included, since sqlc expands the star per catalog), but drift no query touches
+is invisible. Consumers should therefore render the per-dialect schema files
+from a **single source** — as platform-go does via `migrations.SQL(dialect,
+"")` — rather than maintaining N siblings by hand.
 
 ## 6. Convergent emission — the core trick
 
@@ -216,27 +237,42 @@ type CreateUserParams struct {
 
 // querier.go (shared)
 type Querier interface {
-    CreateUser(ctx context.Context, db DBTX, arg CreateUserParams) (User, error)
+    CreateUser(ctx context.Context, db DBTX, arg CreateUserParams) error
+    GetUser(ctx context.Context, db DBTX, arg GetUserParams) (GetUserRow, error)
     // ...
 }
 
-func New(dialect string, prefix string) (Querier, error) {
+// db.go (shared) — the dialect is an emitted enum, not a string, so naming one
+// that was not generated is a compile error rather than an error value at
+// startup. Dialects() lists the roster in a stable order.
+type Dialect string
+
+const (
+    DialectMySQL      Dialect = "mysql"
+    DialectPostgreSQL Dialect = "postgresql"
+    DialectSQLite     Dialect = "sqlite"
+)
+
+func New(dialect Dialect, prefix string) (Querier, error) {
     switch dialect { // the roster, known to every invocation via options
-    case "postgresql": return newPostgres(prefix), nil
-    case "mysql":      return newMySQL(prefix), nil
-    case "sqlite":     return newSQLite(prefix), nil
+    case DialectMySQL:      return newMySQL(prefix), nil
+    case DialectPostgreSQL: return newPostgreSQL(prefix), nil
+    case DialectSQLite:     return newSQLite(prefix), nil
+    default:
+        return nil, fmt.Errorf("identitydb: unknown dialect %q", dialect)
     }
-    return nil, fmt.Errorf("unison: unknown dialect %q", dialect)
 }
 
 // queries_mysql.go (per-dialect)
 const createUserMySQL = "INSERT INTO {{prefix}}identity_users (...) VALUES (?, ?, ?, ?)"
 
-func (q *mysqlQueries) CreateUser(ctx context.Context, db DBTX, arg CreateUserParams) (User, error) {
-    // args marshaled by the generator in MySQL's positional order,
-    // read-back SELECT for the RETURNING-shaped result — same signature.
+func (q *mysqlQueries) CreateUser(ctx context.Context, db DBTX, arg CreateUserParams) error {
+    // args marshaled by the generator in MySQL's positional order.
 }
 ```
+
+**Settled:** `New` takes the emitted enum. The prefix is substituted into each
+statement once, here, at construction — nothing rewrites SQL at query time.
 
 ## 7. Shape-divergence policy
 
@@ -244,13 +280,39 @@ func (q *mysqlQueries) CreateUser(ctx context.Context, db DBTX, arg CreateUserPa
 (measured while porting platform's identity store) is finite and each entry has
 an authoring-side fix that converges the shape:
 
-| divergence | convergent authoring |
-| --- | --- |
-| MySQL has no `RETURNING` | the MySQL query does exec + read-back; the generated method presents the same `:one` result shape |
-| MySQL `LIMIT` takes only a bare placeholder | generator emits the marker; still reported under the same named argument |
-| Reserved words differ (`cursor` in MySQL) | canonical argument names avoid the union of reserved words; the checker catches new ones |
-| `CURRENT_TIMESTAMP` granularity | schema convention (`DATETIME(6)`) — a consumer schema concern, checked by sqlc against that schema |
-| rows-changed vs rows-matched | `:execrows` docs state the semantics per dialect; queries that gate on the count use a discriminating predicate |
+| divergence | convergent authoring | settled by |
+| --- | --- | --- |
+| MySQL has no `RETURNING` | **do not use `RETURNING`.** Creates are `:exec` plus a separate read-back query | `TestReturningIsNotAConvergentShape` |
+| MySQL `LIMIT` takes only a bare placeholder | the `rename_params` option, per dialect | `internal/options` |
+| Reserved words differ (`cursor` in MySQL) | canonical argument names avoid the union of reserved words | sqlc, per dialect |
+| `CURRENT_TIMESTAMP` granularity | schema convention (`DATETIME(6)`) — a consumer schema concern | sqlc, against that schema |
+| rows-changed vs rows-matched | an emitted note above `Querier`; gate on a discriminating predicate, or set `clientFoundRows=true` in the MySQL DSN | `internal/emit/gogen` |
+
+Three of these rows moved during implementation, and how they moved is the
+policy working rather than bending:
+
+**`RETURNING` is refused outright.** The first draft imagined the MySQL query
+doing exec-then-read-back while the generated method still presented a `:one`
+result. That is reconciliation — it means pairing two queries by convention and
+emitting a method that makes two round trips, which is precisely the one thing
+§3 says this tool does not do. sqlc analyzes one statement per query, so there
+is no honest way to spell insert-then-read-back as a single `:one` on MySQL.
+Creates are `:exec` and the read-back is its own query. A `RETURNING` create on
+one dialect and not another is a divergence, and fails to compile like any
+other.
+
+**The `LIMIT` row needed an option, not a generator trick.** MySQL accepts only
+a bare placeholder there — `sqlc.arg()` is a syntax error — and names that
+parameter `limit`; Postgres rejects `limit` as an argument name because it is
+reserved. No spelling satisfies all three engines, so the name converges in
+`rename_params` instead of in the `.sql`. It is deliberately not a general
+reconciler: it renames, and cannot change a type, add a parameter, or reorder
+anything. A genuine shape divergence still diverges and still fails to compile.
+
+**The rows-changed row is emitted, not documented.** Every dialect returns an
+`int64`, so the compiler cannot reach this one — which makes it the single
+divergence in the table that no mechanism here catches. It is emitted as a note
+above `Querier` so a reader meets it where the decision gets made.
 
 A query that genuinely cannot converge does not go through unison — it lives as
 a per-dialect hand-written statement under the consumer's existing container
@@ -265,10 +327,19 @@ per an option. The mapper is one table in the plugin, and it is the *only*
 place per-dialect knowledge exists in shared-file emission — the byte-identical
 overwrites are the standing proof it stays converged.
 
-**SQLite is the known weak engine.** sqlc's SQLite analyzer resolves types more
-loosely (columns come back untyped more often), so the mapper accepts
-per-column hints via options. Spike risk #1; testable on day one against the
-identity corpus.
+**SQLite is the weakest engine, but it is not the only one.** sqlc's SQLite
+analyzer resolves types more loosely — columns come back untyped more often —
+so the mapper accepts per-column hints. That mechanism shipped as the general
+`type_overrides` option rather than a SQLite-specific one, because Postgres
+needs it too: it types a `COALESCE`'d `LIMIT` as `any`. The two jobs turned out
+to be one job. An override names a column as `table.column`, or `*.column` to
+match by name wherever it appears — the form a parameter needs, since a
+parameter built from an expression belongs to no table — and it is the *final*
+type, nullability included: write `*int64` to get a pointer.
+
+**An unresolved type is an error, never a guess.** A column the analyzer could
+not type and the consumer did not override stops generation with a message
+naming the column and the override that would fix it.
 
 ## 9. Table prefixes without SQL surgery
 
@@ -294,14 +365,44 @@ acceptable.
   against sqlc's plugin protocol and the pinned sqlc release, not against any
   consumer's major; its dependency set (plugin-sdk-go, protobuf) never touches
   a consumer's module graph.
-- **Process plugin first.** Consumers pin via a `.unison-version` file and
-  their existing ensure-tool-installed machinery, exactly like `.sqlc-version`
-  and `.protoc-version` today. WASM distribution (URL + sha256 in config,
-  hermetic, sandboxed) is a later milestone once releases exist — it changes
-  packaging, not design.
+- **One native binary, installed like any other tool.** Consumers pin via a
+  `.unison-version` file and their existing ensure-tool-installed machinery,
+  exactly like `.sqlc-version` and `.protoc-version` today. The binary is both
+  modes, and that is what makes the pin sufficient: `unison generate` renders a
+  sqlc config naming `os.Executable()` as the plugin command, so the plugin
+  that runs is the same build as the orchestrator that invoked it, by
+  construction. There is no second artifact to version.
 - **Generated-files gate in consumers:** regenerate in CI, fail on dirty tree.
   Determinism (§2) is what makes this gate meaningful; the tool's own test
   suite asserts double-generation is byte-identical.
+
+### Settled: no WASM distribution
+
+The first draft held WASM packaging (URL + sha256 in config, hermetic,
+sandboxed) as a later milestone. It is dropped, because the orchestrator
+dissolved the problem WASM solves.
+
+sqlc's WASM support exists so a consumer writing `sqlc.yaml` by hand can name a
+plugin without installing a binary and getting the reference right. But unison's
+consumers do not write that config — the orchestrator writes it, and points it
+at itself. The consumer already installed the binary, because installing it is
+how they run `unison generate` at all.
+
+Adopting WASM would cost more than it returns:
+
+- A `wasip1` build is **plugin-only**: no `os/exec`, so the orchestrator half
+  cannot run there. It is a second artifact, not a replacement for the first.
+- It would trade "same version by construction" for a sha256 the orchestrator
+  must know about its own release asset — a strictly weaker guarantee than the
+  one `os.Executable()` gives for free.
+- The module is ~24 MB, fetched and cached per-hash by sqlc.
+
+The only capability it adds is running unison's plugin from a hand-written
+`sqlc.yaml` without the orchestrator — and for unison that is the configuration
+we least want written by hand, since a roster disagreeing with the schemas is
+exactly what the orchestrator exists to make impossible. If an outside consumer
+ever needs hermetic pinning, this changes packaging and not design, and can be
+reconsidered then.
 
 ## 11. Testing
 
@@ -317,68 +418,127 @@ acceptable.
 - **Compile tests:** the emitted package is built as part of the tool's suite;
   a deliberately divergent fixture asserts the failure is a compile error
   naming the query's symbol.
-- **Container tests stay in consumers.** Unison proves emission; consumers
-  prove semantics against real engines, as platform's three-dialect suites
-  already do.
+- **One execution smoke test, in this repo, against real engines.** Golden
+  files and compile tests cannot catch a generator that marshals a dialect's
+  arguments in the wrong order — that compiles cleanly and fails on first
+  execution, which is exactly the deploy-to-discover class this tool exists to
+  kill. So the suite runs the emitted corpus package's queries against real
+  Postgres and MySQL (via `testcontainers-go` **directly** — never platform's
+  `testutils/containers`: platform-go must not appear in go.mod, per milestone
+  0, and that house rule is a platform-repo rule, not an org one) and against
+  SQLite with no container. Drivers (`pgx`, `go-sql-driver/mysql`, a sqlite
+  driver matching platform's choice) are test-only dependencies. Gate on
+  `RUN_CONTAINER_TESTS=true`, skipping otherwise, mirroring the convention
+  unison's consumers already use.
+- **The boundary:** unison's execution smoke proves the *generator* — args
+  marshaled and rows scanned correctly per dialect. Consumers still prove
+  their own semantics against real engines, as platform's three-dialect
+  suites already do.
 
 ## 12. Milestones
 
-0. **De-template the repo.** The repository was created from
-   `primandproper/template-go`, which is an *application* template built on
-   platform-go; unison keeps its toolchain and sheds its application layer, as
-   one commit so the diff documents what this tool deliberately does not carry:
-   - Drop the `platform-go` dependency entirely. Unison's charter (§10) is that
-     it versions against sqlc's plugin protocol, never a consumer's major —
-     and platform will pin `.unison-version`, so depending back on platform is
-     a cross-repo version loop. Logging is stdlib `slog` to **stderr** (§5).
-   - Delete `internal/config`, `config/localdev.json`, `config/production.json`,
-     the `make configs` target, and the `SQLC_GEN_UNISON_` env-prefix
-     machinery. Unison's configuration is the consumer's `unison.yaml` plus
-     flags; it has no service-style environment config.
-   - Delete the `vendor`/`clean_vendor`/`revendor` Makefile targets — the
-     template predates its upstream dropping vendoring, and the same reasoning
-     applies here.
-   - Bump `go 1.26` → `1.27`; add `github.com/sqlc-dev/plugin-sdk-go`.
-   - Keep: Makefile + `scripts/`, `.golangci.yml`, `.github` CI, shellcheck,
-     the format targets, `shoenig/test`, the moq conventions, and the cobra
-     CLI shape — `generate` and `check` as subcommands, plugin mode as the
-     no-args root behavior.
-1. **Spike:** plugin + orchestrator against the identity corpus; shared types,
-   three dialect files, prefix marker, SQLite hints. Exit criteria: a
-   swapped-field paste is a compile error; a dropped MySQL query is a compile
-   error naming it; regeneration is byte-identical.
-2. **First tag + platform pilot:** platform-go ports the identity store onto
-   the generated package; `identity/scan.go` and the runtime binder delete;
-   three-dialect container suite stays green.
-3. **Rollout:** per-package adoption across platform's stores, each preceded by
-   the "can its queries converge" check; non-converging statements stay
-   hand-written under the container gate.
-4. **WASM distribution**, if and when a consumer outside the org wants
-   hermetic pinning.
+Milestones 0 and 1 are **done**: the plugin, the orchestrator, `unison check`,
+the type mapper, the prefix markers, the golden corpus, and an execution suite
+that runs the emitted package against real Postgres, MySQL, and SQLite. Every
+milestone-1 exit criterion has a test standing behind it — a swapped field, a
+dropped query, and a retyped column are each a compile error naming the symbol,
+and regeneration is byte-identical.
+
+What follows is everything that is left.
+
+### 2. Release — the blocking milestone
+
+Nothing can adopt unison until it can be installed at a version. The tool
+generates a header carrying its own version into every emitted file, and that
+version currently reads `dev` for every build, because no tag exists.
+
+**Done:** `scripts/release_build.sh` cross-compiles the four targets consumers
+and their CI run — linux and darwin, amd64 and arm64 — with CGO off, and
+checksums them; `.github/workflows/release.yaml` runs the whole suite against the
+tagged commit and publishes the artifacts. The script refuses to guess a version,
+because the version it stamps ends up inside every consumer's generated files.
+
+**Left: cut `v0.1.0`.** Until a tag exists, the only build anyone can install
+reports `dev`.
+
+A note on what the tag does *not* move: the golden files. They are produced by a
+binary the test suite builds with a plain `go build`, so they report `dev`
+whatever tags exist, and they stay stable across releases. Only a consumer
+running a released binary gets a real version in their headers — which is the
+point of the string.
+
+### 3. Usage — how a consumer actually adopts it
+
+- **`.unison-version` and the ensure-installed path.** Document the pin file
+  and the fetch-if-missing script shape consumers already use for
+  `.sqlc-version` and `.protoc-version`. This is the piece that makes §10's
+  pinning story real rather than aspirational.
+- **A worked adoption guide.** The `unison.yaml`, the `make generate` target,
+  the clean-tree CI gate, and the fact that sqlc must be on PATH at the pinned
+  version. The README covers the config; what is missing is the install-to-CI
+  path end to end.
+
+### 4. Known gaps to close alongside
+
+**Done: `UNISON_LOG_LEVEL` now reaches plugin mode.** sqlc does not hand a
+process plugin the environment it was run with — it builds one holding
+`SQLC_VERSION` plus only the keys the `plugins:` block's `env:` list names — and
+the rendered config named none, so the variable never arrived however faithfully
+plugin mode read it. Closing it turned up a second silence behind the first: a
+level this process could not parse returned without ever being printed, because
+plugin mode does not go through cobra and only the generation error was being
+reported. Both are fixed, and `TestLogLevelReachesPluginMode` drives the whole
+chain rather than asserting on rendered YAML.
+
+**Left: `:execresult` has no corpus coverage.** It is in scope, emitted, and unit
+tested, but the identity corpus does not use it, so it is the one in-scope
+annotation the execution suite never runs. Given that §11's whole argument is
+that only execution catches a marshaling bug, that hole should be filled by a
+corpus query rather than argued away.
+
+### 5. Platform pilot and rollout
+
+platform-go ports the identity store onto the generated package; `identity/scan.go`
+and the runtime binder delete; the three-dialect container suite stays green.
+Then per-package adoption across platform's stores, each preceded by the "can
+its queries converge" check; non-converging statements stay hand-written under
+the container gate.
 
 None of this gates platform's v13 release train: adoption changes no store's
 public API.
 
 ## 13. Risks
 
-- **SQLite analysis quality** (§8) — mitigated by hints; worst case, SQLite
-  columns need more annotation than feels proportionate.
-- **Plugin protocol churn** — sqlc's CodeGenRequest evolves; the pin file plus
-  the tool's own sqlc-version pin keep consumer and tool moving in lockstep.
+- **Plugin protocol churn** — sqlc's CodeGenRequest evolves; the pin file
+  (`internal/sqlcdriver/sqlc-version`, embedded so CI installs exactly what the
+  code requires) plus the orchestrator's refusal to run against a mismatched
+  sqlc keep consumer and tool moving in lockstep.
 - **Scope creep toward conventions** — the temptation to teach unison
   platform's row conventions. Resisted by charter: conventions stay in
   `database/querygen` (which may *emit* the canonical `.sql` unison consumes);
   unison generates from whatever SQL it is given.
 - **Prefix literal collision** (§9) — warned, documented, corpus-controlled.
+- **Semantically divergent, structurally identical shapes** (§6) — the one
+  class the compiler cannot reach. Accepted; it is what the consumer's
+  three-dialect suites are for.
 
-## 14. Open questions
+*Retired:* **SQLite analysis quality** was spike risk #1. It landed as the
+general `type_overrides` option (§8) and did not turn out to be
+disproportionate — the corpus needs a handful of hints, and Postgres needs them
+too.
 
-- Final name (working: `unison`; alternates considered: `polyglot`,
-  `manifold`, `chorus`).
-- Whether `querier.go`'s `New` takes a dialect string or a small enum the tool
-  also emits (leaning enum — a typo'd dialect should not be a runtime error in
-  the one tool whose thesis is moving errors earlier).
-- Whether the orchestrator subsumes the `sqlc compile`-only gate for statements
-  that *don't* go through generation (probably yes: `unison check` = compile
-  all dialects, generate nothing), letting consumers run one tool for both
-  tiers.
+## 14. Settled questions
+
+All three of the original open questions are closed, each pinned by code:
+
+- **The name is `unison`.** `polyglot`, `manifold`, and `chorus` were the
+  alternates; nothing was renamed.
+- **`New` takes an emitted `Dialect` enum**, not a string — a typo'd dialect
+  should not be a runtime error in the one tool whose thesis is moving errors
+  earlier. The package also emits `Dialects()` for callers that need to
+  enumerate the roster.
+- **The orchestrator subsumes the compile-only gate.** `unison check` runs
+  sqlc's static analysis over every dialect and writes nothing, so a project
+  runs one tool for both tiers: the statements that go through generation, and
+  the ones that are still hand-written but should still be checked against the
+  schema they run against.
