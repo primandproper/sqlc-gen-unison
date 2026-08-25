@@ -12,7 +12,7 @@ sqlc remains the analyzer. unison replaces only the **emission**.
 
 ## Status
 
-Pre-release, under active development. See `prd.md` for the design document.
+Pre-release, under active development. See `docs/prd.md` for the design document.
 
 ## The invariant
 

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `github.com/primandproper/sqlc-gen-unison` — a [sqlc](https://sqlc.dev) codegen plugin and
 orchestrator that generates one set of Go types and N dialects' SQL from one logical query set.
-Go 1.27. The design document is `prd.md`; it is authoritative, and its §14 open questions are
+Go 1.27. The design document is `docs/prd.md`; it is authoritative, and its §14 open questions are
 settled (the name is `unison`; `New()` takes an emitted dialect enum; `unison check` is in scope).
 
 sqlc remains the analyzer — unison replaces only the emission. The repository was created from
