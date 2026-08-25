@@ -81,6 +81,13 @@ unison check      # statically check every dialect's SQL, generate nothing
 Queries carry the same name and annotation in every dialect's file — `-- name:
 CreateUser :one` in all three — and the query name is the join key.
 
+**Render the per-dialect schema files from a single source.** Each invocation sees
+only its own dialect's catalog, so drift a query touches is caught — a missing
+column fails that dialect's analysis, a differently-typed one diverges the shape
+and fails compilation — but drift no query touches is invisible. Generating the
+three schema files from one definition removes the class entirely; the corpus in
+`testdata/` is produced that way.
+
 ## What it emits
 
 Into one directory, from N runs:
@@ -114,11 +121,18 @@ make build                  # compile everything, produce artifacts/unison
 ## Common commands
 
 ```bash
-make format     # imports (gci), field/tag alignment, gofmt -s
-make lint       # golangci-lint (Docker) + shellcheck (Docker)
-make test       # go test -shuffle -race -vet=all -failfast (excludes cmd)
-make build      # compile all packages + build the binary with version metadata
+make format              # imports (gci), field/tag alignment, gofmt -s
+make lint                # golangci-lint (Docker) + shellcheck (Docker)
+make test                # the whole suite, containers included
+make test_no_containers  # the same, minus the tests that execute SQL
+make build               # compile all packages + build the binary
 ```
+
+`make test` runs the generated package against real PostgreSQL and MySQL servers via
+testcontainers, and against SQLite with no container at all. Those are the only tests
+that execute a statement: compilation, convergence, and the golden files all pass on a
+package whose arguments are bound in the wrong order, and unison is what generates that
+order. SQLite needs no Docker and always runs.
 
 ## Layout
 

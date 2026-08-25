@@ -84,7 +84,12 @@ the `.sql`.
 - `internal/ir/` — the language-neutral IR (§5). Imports no protobuf and names no Go type.
 - `internal/emit/gogen/` — the one emitter: IR → Go source.
 - `internal/orchestrator/` — `unison.yaml`, per-dialect sqlc config rendering, `generate` and `check`.
-- `internal/sqlcdriver/` — runs the pinned sqlc, and holds the pin.
+- `internal/sqlcdriver/` — runs the pinned sqlc, and holds the pin in `sqlc-version`.
+- `internal/containers/` — the container lifecycle for the execution suite, plus `pgtest` and
+  `mysqltest`. Shaped after platform-go's `testutils/containers` so the harness is recognizable.
+- `internal/execution/` — runs the generated package against real servers. Test files only.
+- `testdata/golden/identitydb/` — the emitted package, committed. Importable by its full path while
+  invisible to `./...`, so the formatters never rewrite it and the execution suite can import it.
 - `version/` — build metadata (`CommitHash`/`BuildTime`/`CommitTime`), injected via `-ldflags` by
   `scripts/build.sh`.
 - `testdata/` — the golden corpus: platform-go's identity store, vendored frozen. It is a fixture,
@@ -150,6 +155,21 @@ derive the org-level prefix.
 - Tests call `t.Parallel()` by default.
 - `make test` excludes `cmd` packages, so keep testable logic in `internal/` and `version/`.
 - Test command: `CGO_ENABLED=1 go test -shuffle=on -race -vet=all -failfast`.
+- **`make test` runs containers by default**; `make test_no_containers` is the escape hatch. The
+  gate is `RUN_CONTAINER_TESTS=true`, spelled the way platform-go spells it so one export governs
+  both repositories. There is no build tag.
+- The execution suite is one `runQuerierSuite(t, ctx, env)` called from three entrypoints, so a case
+  added for one dialect is a case added for all three. Its subtests are deliberately sequential —
+  each builds on the rows the last one left.
+
+### Why the execution suite exists
+
+Compilation, convergence, byte-identical shared files, and the golden diff **all pass** on a
+generated package whose arguments are bound in the wrong order. That was verified by mutation: a
+one-line swap of the last two entries in `converge`'s `args` slice leaves the shared shape identical
+and every non-container test green, and all three execution runs fail. unison generates the argument
+order, so an argument-order bug is wrong in every consumer at once. That specific hole is what these
+tests cover — not consumer semantics, which stay in consumers per §11.
 
 ## Conventions worth knowing
 

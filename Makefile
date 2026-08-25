@@ -97,6 +97,15 @@ build: $(ARTIFACTS_DIR)
 run:
 	go run $(CMD_PACKAGE) $(ARGS)
 
+# test runs everything, containers included. The container-backed tests are the
+# only ones that execute a generated statement, so they are on by default.
 .PHONY: test
 test: $(ARTIFACTS_DIR)
 	$(SCRIPTS_DIR)/test.sh
+
+# test_no_containers is the escape hatch for a host with no Docker daemon. It
+# skips exactly the tests that would catch an argument bound in the wrong
+# position, so it is a convenience, not a substitute.
+.PHONY: test_no_containers
+test_no_containers: $(ARTIFACTS_DIR)
+	$(SCRIPTS_DIR)/test.sh false
