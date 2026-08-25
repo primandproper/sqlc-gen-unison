@@ -7,7 +7,7 @@ set -euo pipefail
 # Which files those are is go_files.sh's question, not this one's.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PACKAGE_PREFIX="${1:-github.com/primandproper/template-go}"
+PACKAGE_PREFIX="${1:-github.com/primandproper/sqlc-gen-unison}"
 PROJECT_ROOT="${2:-$(pwd)}"
 
 # Through a file rather than `< <(go_files.sh)`: process substitution discards

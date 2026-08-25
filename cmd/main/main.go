@@ -1,9 +1,8 @@
-// Command main is the application's entrypoint.
+// Command main is unison's entrypoint.
 //
 // It sets up a context that is cancelled on SIGINT/SIGTERM and hands off to the
-// CLI, which bootstraps observability and dispatches to the requested
-// subcommand. cobra prints any command error to stderr; a non-nil result exits
-// with a non-zero status.
+// CLI. cobra prints any command error to stderr; a non-nil result exits with a
+// non-zero status.
 package main
 
 import (
@@ -12,7 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/primandproper/template-go/internal/cli"
+	"github.com/primandproper/sqlc-gen-unison/internal/cli"
 )
 
 func main() {

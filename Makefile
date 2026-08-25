@@ -4,8 +4,8 @@ MYSELF   := $(shell id -u)
 MY_GROUP := $(shell id -g)
 
 # PATHS
-THIS          := github.com/primandproper/template-go
-BINARY_NAME   := template-go
+THIS          := github.com/primandproper/sqlc-gen-unison
+BINARY_NAME   := unison
 CMD_PACKAGE   := $(THIS)/cmd/main
 ARTIFACTS_DIR := artifacts
 SCRIPTS_DIR   := scripts
@@ -15,7 +15,7 @@ COVERAGE_OUT  := $(ARTIFACTS_DIR)/coverage.out
 TOTAL_PACKAGE_LIST := `go list $(THIS)/...`
 
 # CONTAINER VERSIONS
-LINTER_IMAGE     := golangci/golangci-lint:v2.10.1
+LINTER_IMAGE     := golangci/golangci-lint:v2.13.1
 SHELLCHECK_IMAGE := koalaman/shellcheck:stable
 
 # COMMANDS
@@ -32,23 +32,11 @@ $(ARTIFACTS_DIR):
 ## PREREQUISITES
 
 # setup prepares a fresh clone: creates the artifacts dir and downloads the
-# module cache. This template does not vendor (platform-go's dependency tree is
-# large); builds and tests run against the module cache.
+# module cache. This module does not vendor; builds and tests run against the
+# module cache.
 .PHONY: setup
 setup: $(ARTIFACTS_DIR)
 	go mod download
-
-# Vendoring targets are provided for consumers who prefer a committed vendor
-# tree, but nothing depends on them by default.
-.PHONY: clean_vendor
-clean_vendor:
-	$(SCRIPTS_DIR)/clean_vendor.sh
-
-vendor:
-	$(SCRIPTS_DIR)/vendor.sh
-
-.PHONY: revendor
-revendor: clean_vendor vendor
 
 ## FORMATTING
 
@@ -94,15 +82,6 @@ shellcheck:
 
 .PHONY: lint
 lint: golang_lint shellcheck
-
-## GENERATED FILES
-
-# configs renders the per-environment config files under config/ from their real
-# Go objects (cmd/tools/codegen/configs). Commit the output so the checked-in
-# JSON stays in lockstep with the code.
-.PHONY: configs
-configs:
-	$(SCRIPTS_DIR)/configs.sh $(THIS)
 
 ## EXECUTION
 

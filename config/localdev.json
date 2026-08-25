@@ -1,9 +1,0 @@
-{
-	"observability": {
-		"logging": {
-			"serviceName": "template-go",
-			"level": "debug",
-			"provider": "slog"
-		}
-	}
-}

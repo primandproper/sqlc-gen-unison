@@ -1,49 +1,44 @@
-# template-go
+# sqlc-gen-unison
 
-A batteries-included Go application template built on
-[`primandproper/platform-go`](https://github.com/primandproper/platform-go).
+A [sqlc](https://sqlc.dev) codegen plugin and orchestrator that generates **one**
+set of Go types and **N** dialects' SQL from one logical query set.
 
-Unlike a bare scaffold, this template ships a **real, runnable application**: a
-[Cobra](https://github.com/spf13/cobra) CLI that bootstraps the platform-go
-observability suite (logging, tracing, metrics, profiling) with graceful
-shutdown, plus the full build/format/lint/test toolchain and CI to go with it.
+A store supporting Postgres, MySQL, and SQLite ships a single `CreateUserParams`,
+a single row struct, and a single method signature — with the query text and
+argument order selected by dialect at construction, and every correspondence
+between SQL and Go emitted by a generator instead of maintained by hand.
 
-The CLI is meant to be your single entrypoint. Building a one-off tool? Add a
-subcommand. A long-running worker? Add a subcommand. An HTTP service? Add a
-`serve` subcommand that stands up `platform-go`'s HTTP server. You start here.
+sqlc remains the analyzer. unison replaces only the **emission**.
 
-## Quickstart
+## Status
 
-Requires **Go 1.26+**. [Docker](https://www.docker.com/) is used for linting and
-shellcheck.
+Pre-release, under active development. See `prd.md` for the design document.
+
+## The invariant
+
+sqlc invokes a plugin once per `sql:` block, and each block has one engine — so
+no single invocation ever sees more than one dialect's analysis. unison's answer
+is **convergent emission**: every invocation receives the full dialect roster via
+options, and emits the shared files (types, querier interface, constructor) as a
+pure, deterministic function of roster and query shapes, all to the same paths.
+
+When the dialects agree, the overwrites are byte-identical no-ops. When they
+diverge, the last write wins the shared files and some other dialect's query file
+now names a symbol that no longer exists — so the **Go compiler** reports the
+divergence, in generated code, naming the query.
+
+There is no merge step, no hash, no promotion pass. That is the point.
+
+## Requirements
+
+Requires **Go 1.27+** and a pinned **sqlc**. [Docker](https://www.docker.com/) is
+used for linting and shellcheck.
 
 ```bash
 make setup                  # create artifacts/ and download the module cache
-make build                  # compile everything, produce artifacts/template-go
-./artifacts/template-go version
-./artifacts/template-go --help
+make build                  # compile everything, produce artifacts/unison
+./artifacts/unison version
 ```
-
-Or run without building a binary:
-
-```bash
-make run ARGS="version"
-```
-
-## What's included
-
-- **A working CLI** — `cmd/main` → `internal/cli` (cobra root + `version`
-  subcommand), wired to the observability suite in `internal/config`.
-- **Observability out of the box** — structured slog logging; tracing, metrics,
-  and profiling default to noop so the binary is quiet and dependency-free until
-  you turn them on.
-- **`Makefile` + `scripts/`** — thin Makefile delegating to shellcheck-clean
-  scripts for build, format, lint, and test.
-- **`.golangci.yml`** — ~46 linters (golangci-lint v2), with `gci` + `gofmt`
-  formatters and a strict-but-practical policy.
-- **GitHub Actions** — `build`, `formatting`, `lint`, `shellcheck`, and
-  `unit tests`, each mirroring a `make` target and path-filtered.
-- **`CLAUDE.md`**, issue/PR templates, and a Go `.gitignore`.
 
 ## Common commands
 
@@ -54,74 +49,22 @@ make test       # go test -shuffle -race -vet=all -failfast (excludes cmd)
 make build      # compile all packages + build the binary with version metadata
 ```
 
-## Configuration
-
-The CLI reads two settings, via flags or environment variables:
-
-| Flag             | Environment variable       | Default       | Values                           |
-| ---------------- | -------------------------- | ------------- | -------------------------------- |
-| `--log-level`    | `TEMPLATE_GO_LOG_LEVEL`    | `info`        | `debug`, `info`, `warn`, `error` |
-| `--service-name` | `TEMPLATE_GO_SERVICE_NAME` | `template-go` | any string                       |
-
-```bash
-TEMPLATE_GO_LOG_LEVEL=debug ./artifacts/template-go version
-```
-
-Observability logs are structured slog written to **stdout**. The `version`
-subcommand prints its data to stdout and emits nothing at the default `info`
-level, so `template-go version` stays machine-parseable.
-
-To enable real tracing/metrics/profiling, populate the corresponding sub-configs
-in `internal/config/config.go` and call `observability.Config.NewPillars`
-(the platform's aggregate bootstrap), or replace the noop constructors in
-`Config.NewPillars`.
-
 ## Layout
 
 ```
 cmd/main/             # entrypoint: signal-cancellable context -> cli.Execute
-internal/cli/         # cobra root command, observability bootstrap, subcommands
-internal/config/      # assembles observability.Config and builds the pillars
+internal/cli/         # cobra root command and subcommands
 version/              # build metadata, injected via -ldflags by scripts/build.sh
 scripts/              # build/format/lint/test/shellcheck helpers
 .github/workflows/    # CI mirroring the make targets
 ```
 
-## Make it yours
+## stdout is a protocol channel
 
-After creating a repository from this template, run the rename script with your
-new module path. It rewrites every reference to this template's module path and
-app name, reformats the code, and then deletes itself — leaving no trace that the
-project started from a template:
-
-```bash
-./rename.sh github.com/acme/coolapp
-```
-
-Then confirm everything is wired up:
-
-```bash
-make setup && make build && make test
-```
-
-<details>
-<summary>What the script changes (in case you prefer to do it by hand)</summary>
-
-- **`go.mod`** — the `module` path.
-- **`Makefile`** — `THIS` (full module path) and `BINARY_NAME`.
-- **`.golangci.yml`** — the `prefix(...)` entries under `formatters.gci.sections`
-  (this module and its org).
-- **`scripts/`** — the module path in `scripts/test.sh` and
-  `scripts/format_imports.sh`, and `VERSION_PKG` in `scripts/build.sh`.
-- **`internal/`** — `DefaultServiceName` and the `TEMPLATE_GO_*` env-var prefixes.
-- **`CLAUDE.md`** and this **`README.md`** — project details.
-
-The `Makefile` `THIS` variable must be the full module path, because
-`scripts/format_imports.sh` runs `dirname` on it to derive the org-level import
-prefix (section 3 of the `gci` ordering). `platform-go` (also under
-`github.com/primandproper`) intentionally moves to the third-party import group
-once your module lives under a different org.
-</details>
+In plugin mode sqlc writes a `CodeGenRequest` protobuf to this process's stdin
+and reads a `CodeGenResponse` back from stdout. Anything else printed to stdout
+corrupts the response, so all logging is stdlib `slog` to **stderr**. The only
+command that writes to stdout is one that owns its own output, such as `version`.
 
 ## License
 

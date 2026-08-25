@@ -1,145 +1,102 @@
-// Package cli wires the command-line interface together and bootstraps the
-// platform-go observability suite that the rest of the application builds on.
+// Package cli wires unison's command-line interface together.
 //
-// The CLI is the template's single entrypoint: whether you are building a
-// one-off tool, a long-running worker, or an HTTP service, you start here and
-// hang new subcommands off the root command.
+// unison is a sqlc codegen plugin and the orchestrator that drives it. The two
+// modes share one binary, so this package owns the one decision that separates
+// them and the logging setup they both use.
+//
+// Logging is stdlib slog to stderr, and that is not a style preference. In
+// plugin mode sqlc hands the process a CodeGenRequest on stdin and reads a
+// CodeGenResponse protobuf back from stdout, so stdout is a protocol channel:
+// anything else written there corrupts the response. Nothing in this module may
+// print to stdout outside of a command that owns its own output.
 package cli
 
 import (
 	"context"
-	"os"
+	"fmt"
+	"io"
+	"log/slog"
 	"strings"
-	"time"
-
-	"github.com/primandproper/template-go/internal/config"
-
-	"github.com/primandproper/platform-go/v11/observability"
-	"github.com/primandproper/platform-go/v11/observability/logging"
 
 	"github.com/spf13/cobra"
 )
 
-// ConfigFilePathEnvVar names the environment variable that seeds the --config
-// flag: when it points at a JSON config file, that file is loaded instead of the
-// flag/environment defaults.
-const ConfigFilePathEnvVar = config.EnvVarPrefix + "CONFIG_FILEPATH"
-
-// shutdownTimeout bounds how long we wait for telemetry to flush on exit.
-const shutdownTimeout = 5 * time.Second
+// CommandName is the name the CLI reports for itself. It is the tool's name
+// rather than the module's, because that is what a consumer types and what
+// .unison-version pins.
+const CommandName = "unison"
 
 // application holds the process-wide dependencies constructed during startup.
-// The logger is populated by bootstrap and shared with subcommands, which reach
-// it through the application receiver on their RunE closures.
 type application struct {
-	pillars *observability.Pillars
-	logger  logging.Logger
+	logger *slog.Logger
 }
 
-// Execute builds the root command, runs it, and tears down the observability
-// suite afterwards so buffered telemetry is flushed even when a command fails.
+// Execute builds the root command and runs it.
 func Execute(ctx context.Context) error {
-	app := &application{}
+	app := &application{logger: slog.New(slog.DiscardHandler)}
 
-	rootCmd := app.newRootCommand()
-	err := rootCmd.ExecuteContext(ctx)
-
-	app.shutdown(ctx)
-
-	return err
+	return app.newRootCommand().ExecuteContext(ctx)
 }
 
 // newRootCommand constructs the cobra root command and registers subcommands.
 func (a *application) newRootCommand() *cobra.Command {
-	var (
-		logLevel    string
-		serviceName string
-		configPath  string
-	)
+	var logLevel string
 
 	rootCmd := &cobra.Command{
-		Use:          config.DefaultServiceName,
-		Short:        "A Go application template built on primandproper/platform-go.",
+		Use:          CommandName,
+		Short:        "Generate one set of Go types and N dialects' SQL from one logical query set.",
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			return a.bootstrap(cmd.Context(), config.Options{ServiceName: serviceName, LogLevel: logLevel}, configPath)
+			return a.bootstrap(cmd.ErrOrStderr(), logLevel)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			a.log().Info("no subcommand provided; run `template-go help` to see what's available")
-
 			return cmd.Help()
 		},
 	}
 
-	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", envOr("TEMPLATE_GO_LOG_LEVEL", config.LevelInfo), "log level: debug, info, warn, or error")
-	rootCmd.PersistentFlags().StringVar(&serviceName, "service-name", envOr("TEMPLATE_GO_SERVICE_NAME", config.DefaultServiceName), "service name reported in telemetry")
-	rootCmd.PersistentFlags().StringVar(&configPath, "config", envOr(ConfigFilePathEnvVar, ""), "path to a JSON config file; when set, it is loaded in place of the flag/env defaults")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level: debug, info, warn, or error")
 
 	rootCmd.AddCommand(a.newVersionCommand())
 
 	return rootCmd
 }
 
-// bootstrap assembles configuration and stands up the observability pillars,
-// caching the logger on the application for subcommands to use. When configPath
-// is set it loads that JSON file; otherwise it builds from the flag/env
-// defaults. Either way, environment variables overlay the result.
-func (a *application) bootstrap(ctx context.Context, opts config.Options, configPath string) error {
-	var (
-		cfg *config.Config
-		err error
-	)
-
-	if configPath = strings.TrimSpace(configPath); configPath != "" {
-		cfg, err = config.LoadFromFile(ctx, configPath)
-	} else {
-		cfg, err = config.Load(ctx, opts)
-	}
+// bootstrap installs the logger every command shares. It writes to the stream it
+// is given — stderr in practice — because stdout belongs to the plugin protocol.
+func (a *application) bootstrap(stderr io.Writer, logLevel string) error {
+	level, err := parseLevel(logLevel)
 	if err != nil {
 		return err
 	}
 
-	pillars, err := cfg.NewPillars(ctx)
-	if err != nil {
-		return err
-	}
-
-	a.pillars = pillars
-	a.logger = logging.NewNamedLogger(pillars.Logger, cfg.Observability.Logging.ServiceName)
-
-	a.logger.Debug("observability suite initialized")
+	a.logger = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 
 	return nil
 }
 
-// shutdown flushes and releases the observability pillars. It is safe to call
-// when startup never completed. The parent context is typically already
-// cancelled (SIGINT/SIGTERM), so we strip cancellation but keep its values and
-// bound the flush with our own timeout.
-func (a *application) shutdown(ctx context.Context) {
-	if a.pillars == nil {
-		return
+// log returns the application logger, or a logger that discards when bootstrap
+// has not run.
+func (a *application) log() *slog.Logger {
+	if a.logger == nil {
+		return slog.New(slog.DiscardHandler)
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
-	defer cancel()
-
-	if err := a.pillars.Shutdown(ctx); err != nil {
-		a.logger.Error("shutting down observability suite", err)
-	}
+	return a.logger
 }
 
-// log returns the application logger, or a noop logger if bootstrap has not run.
-func (a *application) log() logging.Logger {
-	return logging.EnsureLogger(a.logger)
-}
-
-// envOr returns the value of the named environment variable, or fallback when
-// it is unset or empty.
-func envOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
+// parseLevel maps the --log-level flag onto a slog level, naming the offending
+// value rather than silently defaulting.
+func parseLevel(name string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("unknown log level %q: want debug, info, warn, or error", name)
 	}
-
-	return fallback
 }

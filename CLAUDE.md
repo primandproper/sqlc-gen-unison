@@ -4,39 +4,69 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`github.com/primandproper/template-go` — a batteries-included Go application template built on
-[`github.com/primandproper/platform-go`](https://github.com/primandproper/platform-go). Go 1.26.
+`github.com/primandproper/sqlc-gen-unison` — a [sqlc](https://sqlc.dev) codegen plugin and
+orchestrator that generates one set of Go types and N dialects' SQL from one logical query set.
+Go 1.27. The design document is `prd.md`; it is authoritative, and its §14 open questions are
+settled (the name is `unison`; `New()` takes an emitted dialect enum; `unison check` is in scope).
 
-The application is a **Cobra CLI** that acts as the single entrypoint. Out of the box it bootstraps
-the platform-go observability suite (logging/tracing/metrics/profiling) with graceful shutdown and
-ships a `version` subcommand. Grow it by adding subcommands (e.g. a `serve` command that stands up
-`platform-go`'s HTTP server).
+sqlc remains the analyzer — unison replaces only the emission. The repository was created from
+`primandproper/template-go` and keeps its toolchain while shedding its application layer; the
+de-template commit is the record of what this tool deliberately does not carry. **`platform-go`
+must never appear in `go.mod`**: unison versions against sqlc's plugin protocol, and platform
+pins `.unison-version`, so depending back on platform is a cross-repo version loop.
+
+## The core invariant: convergent emission
+
+sqlc invokes a plugin once per `sql:` block, and each block has one engine, so no invocation ever
+sees more than one dialect's analysis. Every invocation therefore receives the **full dialect
+roster** via options and emits the shared files (types, querier interface, `New` constructor) as a
+**pure, deterministic function of (roster, query shapes, options)**, all to the same paths.
+
+- When dialects agree, the overwrites are byte-identical no-ops.
+- When they diverge, last-write-wins the shared files and another dialect's query file now names a
+  symbol that no longer exists — the **Go compiler** reports the divergence, naming the query.
+
+There is deliberately **no merge step, no hash, and no promotion pass**. When something is hard,
+the fix is never to add one. Shape divergence is *refused, not reconciled* (§7); the fix happens in
+the `.sql`.
+
+## Two modes, one binary
+
+- **Plugin mode** — the no-args root behavior. sqlc writes a `CodeGenRequest` protobuf to stdin and
+  reads a `CodeGenResponse` back from stdout.
+- **`unison generate`** — the orchestrator. Reads `unison.yaml`, renders a per-dialect sqlc config,
+  and shells out to the pinned sqlc once per dialect, each run pointing `out:` at the same directory.
+- **`unison check`** — compiles all dialects, generates nothing.
+
+## Hard constraints
+
+- **stdout is the protocol channel in plugin mode.** All logging is stdlib `slog` to **stderr**.
+  Nothing else may ever print to stdout in that mode.
+- **Determinism is load-bearing.** Generating twice must be byte-identical: sorted iteration
+  everywhere, no timestamps, no absolute paths in output. The test suite asserts double-generation
+  equality. Generated headers carry the sqlc version and unison version only — no dates, no
+  randomness.
+- **No SQL parsing of our own.** If sqlc cannot analyze it, unison does not support it. The only
+  query-text rewriting is the catalog-informed prefix markers of §9.
+- **One output language.** The convergence core is language-neutral (the IR of §5); the Go emitter
+  sits behind that seam. A second emitter is out of scope.
+- **No platform-go conventions baked in.** Anything platform-flavored arrives via plugin options in
+  the consumer's config.
 
 ## Layout
 
 - `cmd/main/main.go` — thin entrypoint: signal-cancellable context → `cli.Execute`.
-- `cmd/tools/codegen/configs/` — codegen tool behind `make configs`: builds each environment's
-  `*config.Config` as a real, typed Go object (`environments.go`), validates it, and renders it to
-  `config/<env>.json` via `config.Render`. The checked-in JSON is a projection of these builders — edit
-  the Go, never the JSON, then re-run `make configs`.
-- `config/` — generated per-environment config files (`localdev.json`, `production.json`); committed so
-  they stay reviewable, and loadable at runtime via `--config`.
-- `internal/cli/` — cobra root command, observability bootstrap + shutdown, subcommands.
-- `internal/config/` — assembles `observability.Config` and builds the pillars (slog logging + noop
-  tracing/metrics/profiling by default). See `Config.NewPillars` for the upgrade path to real telemetry.
-  Two loaders use `platform-go/v11/config`: `Load` overlays `TEMPLATE_GO_`-prefixed environment
-  variables on the flag/default-seeded config, and `LoadFromFile` decodes a complete JSON config file
-  and then overlays the same environment variables. `Render` goes the other way: it validates typed
-  `Config` objects and writes them to disk (see `make configs`).
+- `internal/cli/` — cobra root command and subcommands. Owns the plugin-mode/stdout rule.
 - `version/` — build metadata (`CommitHash`/`BuildTime`/`CommitTime`), injected via `-ldflags` by
   `scripts/build.sh`.
+- `testdata/` — the golden corpus: platform-go's identity store, vendored frozen. It is a fixture,
+  not a dependency; its README records the source commit.
 
 ## Common Commands
 
 ```bash
 make setup          # Create artifacts dir + download the module cache
-make configs        # Render config/<env>.json from the real Go objects in cmd/tools/codegen/configs
-make build          # Compile all packages, then build artifacts/template-go with version metadata
+make build          # Compile all packages, then build artifacts/unison with version metadata
 make run ARGS="version"   # go run the CLI with arguments
 make format         # Format all Go code (imports, field alignment, tag alignment, gofmt)
 make lint           # Run golangci-lint (Docker) + shellcheck
@@ -45,15 +75,13 @@ make test           # Run tests (race detector, shuffle, failfast); excludes cmd
 
 Run a single test:
 ```bash
-go test -run TestName ./internal/config/...
+go test -run TestName ./internal/...
 ```
 
 Linting runs in Docker (`golangci/golangci-lint` image). Formatting runs locally via `go tool` with
 `gci`, `goimports`, `fieldalignment`, `tagalign`, and `gofmt` (declared in the `tool` block of go.mod).
 
-This template does **not** vendor dependencies (platform-go's dependency tree is large); builds and
-tests run against the module cache. Vendoring targets (`make vendor` / `make revendor`) exist for
-consumers who want them.
+This module does **not** vendor dependencies; builds and tests run against the module cache.
 
 `scripts/go_files.sh` is the one place that decides which Go files the formatters see, and
 `format_golang.sh`, `format_imports.sh`, `goimports.sh`, and the `gofmt` check in
@@ -69,41 +97,38 @@ nothing (or a CI check that quietly checks nothing) is worse than a stop. And it
 **through a file, not `< <(...)`**, because process substitution discards the exit status of what it
 runs, which is exactly how that empty list would go unnoticed.
 
+Note that `testdata/` being invisible to the formatters is what lets the golden corpus and the
+emitted golden files live there without the toolchain rewriting them.
+
 ## Import Ordering
 
 Import ordering uses `gci` with four sections, separated by blank lines:
 
 1. Standard library
-2. `github.com/primandproper/template-go` (this module)
-3. `github.com/primandproper` (org-level packages, including platform-go)
+2. `github.com/primandproper/sqlc-gen-unison` (this module)
+3. `github.com/primandproper` (org-level packages)
 4. Everything else (third-party)
 
-The Makefile `THIS` variable must be the full module path (`github.com/primandproper/template-go`)
-because `format_imports.sh` runs `dirname` on it to derive the org-level prefix.
+The Makefile `THIS` variable must be the full module path
+(`github.com/primandproper/sqlc-gen-unison`) because `format_imports.sh` runs `dirname` on it to
+derive the org-level prefix.
 
 ## Testing
 
 - Tests use `shoenig/test`: `test` for non-fatal assertions, `must` for fatal ones. Both take
   `(t, expected, actual)` and annotate failures via `test.Sprintf` / `must.Sprintf` settings rather
-  than `...f` variants.
+  than `...f` variants. **No testify.**
+- Interfaces are faked with `moq`, not hand-written mocks.
 - Tests call `t.Parallel()` by default.
 - `make test` excludes `cmd` packages, so keep testable logic in `internal/` and `version/`.
 - Test command: `CGO_ENABLED=1 go test -shuffle=on -race -vet=all -failfast`.
 
 ## Conventions worth knowing
 
-- Observability logs are structured slog written to **stdout**. `version` prints its data to stdout
-  and emits nothing at the default `info` level, so `template-go version` stays machine-parseable.
-- The `--log-level` / `--service-name` persistent flags default from the `TEMPLATE_GO_LOG_LEVEL` and
-  `TEMPLATE_GO_SERVICE_NAME` environment variables. The `--config` flag (default from
-  `TEMPLATE_GO_CONFIG_FILEPATH`) points at a JSON config file; when set, `bootstrap` loads it via
-  `config.LoadFromFile` instead of the flag/env defaults.
-- Configuration is layered: defaults (or a JSON file) < `TEMPLATE_GO_`-prefixed environment variables.
-  Env vars follow platform-go's nested `envPrefix` tags, e.g.
-  `TEMPLATE_GO_OBSERVABILITY_LOGGING_LEVEL`. Give new `Config` fields both `envPrefix`/`env` and `json`
-  tags so they participate in `Load` and `LoadFromFile`.
-- To enable real tracing/metrics/profiling, populate the sub-configs in `internal/config` and call
-  `observability.Config.NewPillars`, or swap the noop constructors in `Config.NewPillars`.
+- The `--log-level` persistent flag defaults to `info`. There is no environment-variable config
+  machinery: unison's configuration is the consumer's `unison.yaml` plus flags.
+- `version` prints its data to stdout and emits nothing at the default `info` level, so
+  `unison version` stays machine-parseable.
 
 ## Linting
 
