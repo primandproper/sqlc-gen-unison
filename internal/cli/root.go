@@ -16,7 +16,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
+
+	"github.com/primandproper/sqlc-gen-unison/internal/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -31,8 +34,17 @@ type application struct {
 	logger *slog.Logger
 }
 
-// Execute builds the root command and runs it.
+// Execute dispatches to one of unison's two modes.
+//
+// Plugin mode is not a subcommand, because sqlc does not call it like one: it
+// passes the gRPC method to invoke as the first argument, writes a request to
+// stdin, and expects a response on stdout. Deciding here — before cobra sees
+// the arguments — is what keeps that call from being parsed as a typo.
 func Execute(ctx context.Context) error {
+	if protocol.IsPluginInvocation(os.Args[1:], os.Stdin) {
+		return runPlugin(ctx, os.Stdin, os.Stdout, os.Stderr)
+	}
+
 	app := &application{logger: slog.New(slog.DiscardHandler)}
 
 	return app.newRootCommand().ExecuteContext(ctx)
