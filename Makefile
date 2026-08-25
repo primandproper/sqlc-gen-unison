@@ -103,6 +103,13 @@ run:
 test: $(ARTIFACTS_DIR)
 	$(SCRIPTS_DIR)/test.sh
 
+# release_build cross-compiles the release artifacts and checksums them, the
+# same way the release workflow does. VERSION must be the tag: the binary stamps
+# it into every file it generates, so this refuses to guess one.
+.PHONY: release_build
+release_build: $(ARTIFACTS_DIR)
+	$(SCRIPTS_DIR)/release_build.sh $(ARTIFACTS_DIR)/release $(VERSION)
+
 # test_no_containers is the escape hatch for a host with no Docker daemon. It
 # skips exactly the tests that would catch an argument bound in the wrong
 # position, so it is a convenience, not a substitute.

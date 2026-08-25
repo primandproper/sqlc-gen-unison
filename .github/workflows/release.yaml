@@ -1,0 +1,99 @@
+---
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Releases are never cancelled mid-flight: a half-published tag is worse than a
+# slow one, and two tags pushed close together are two releases, not a race.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+name: release
+
+permissions:
+  contents: write
+
+jobs:
+  # A tag that fails the suite must not ship. The pull-request workflows do not
+  # count here — a tag can point anywhere, including at a commit no pull request
+  # ever gated — so the suite runs again against exactly what is being released.
+  verify:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.27.x']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: go.sum
+
+      # The same pin the code embeds, so the analyzer that produced the golden
+      # files is the analyzer this release was tested against.
+      - name: Install the pinned sqlc
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < internal/sqlcdriver/sqlc-version)"
+
+          go install "github.com/sqlc-dev/sqlc/cmd/sqlc@${version}"
+          sqlc version
+
+      # UNISON_REQUIRE_SQLC turns a skipped analyzer test into a failed one. A
+      # release that quietly skipped them would have checked nothing.
+      - name: Run the suite
+        env:
+          UNISON_REQUIRE_SQLC: "1"
+        run: make test
+
+  release:
+    needs: verify
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.27.x']
+    steps:
+      # Full history so the commit metadata baked into the binary is accurate.
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: go.sum
+
+      # The tag is passed explicitly rather than left to `git describe`, so the
+      # version stamped into the binary — and from there into every consumer's
+      # generated files — is the tag that triggered this run and nothing else.
+      - name: Build the release artifacts
+        env:
+          UNISON_VERSION: ${{ github.ref_name }}
+        run: scripts/release_build.sh artifacts/release "${UNISON_VERSION}"
+
+      # --verify-tag refuses to invent a tag that is not already pushed, which
+      # is the one way this job could publish a release for a commit nobody
+      # tagged.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh release create "${{ github.ref_name }}" \
+            --verify-tag \
+            --generate-notes \
+            --title "${{ github.ref_name }}" \
+            artifacts/release/*
