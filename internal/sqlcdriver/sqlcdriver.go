@@ -10,10 +10,23 @@ package sqlcdriver
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"os/exec"
 	"strings"
 )
+
+// pinnedVersionFile is the pin, and it is a file rather than a constant so that
+// CI installs the same sqlc this package requires.
+//
+// The alternative — a Go constant plus a version written again in a workflow —
+// drifts, and the way it drifts is the bad way: the tests that drive real sqlc
+// skip when the version does not match, so a stale workflow produces a green
+// build that checked nothing. The same reasoning scripts/go_files.sh is built
+// on.
+//
+//go:embed sqlc-version
+var pinnedVersionFile string
 
 // PinnedVersion is the sqlc release unison is built and tested against.
 //
@@ -21,7 +34,15 @@ import (
 // moving target and the analysis it carries is the input to every shape decision
 // here. A consumer whose sqlc differs is generating from a different analyzer
 // than the one the golden files were produced by.
-const PinnedVersion = "v1.31.1"
+var PinnedVersion = strings.TrimSpace(pinnedVersionFile)
+
+// RequireEnvVar turns a missing or mismatched sqlc from a skipped test into a
+// failed one.
+//
+// Locally, a clone without sqlc should still run everything else. In CI, a
+// suite that quietly skips the tests that drive the real analyzer is worse than
+// one that stops, because those are the tests that check anything at all.
+const RequireEnvVar = "UNISON_REQUIRE_SQLC"
 
 // Run invokes sqlc with the given arguments in dir.
 //

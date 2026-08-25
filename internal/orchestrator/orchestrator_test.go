@@ -289,20 +289,36 @@ func buildUnison(t *testing.T) string {
 	return builtBinary
 }
 
-// findSQLC locates the pinned sqlc, skipping when it is absent.
+// findSQLC locates the pinned sqlc.
+//
+// Locally it skips when sqlc is absent or the wrong version, so a fresh clone
+// still runs the rest of the suite. In CI, where UNISON_REQUIRE_SQLC is set, the
+// same conditions fail instead: these are the tests that drive the real
+// analyzer, and a suite that silently skips them has checked nothing.
 func findSQLC(t *testing.T) string {
 	t.Helper()
 
+	required := os.Getenv(sqlcdriver.RequireEnvVar) != ""
+
+	stop := t.Skipf
+	if required {
+		stop = t.Fatalf
+	}
+
 	binary, err := exec.LookPath("sqlc")
 	if err != nil {
-		t.Skip("sqlc is not on PATH; skipping the orchestrator tests")
+		stop("sqlc is not on PATH, and the pinned %s is needed to drive the real analyzer", sqlcdriver.PinnedVersion)
+
+		return ""
 	}
 
 	version, err := sqlcdriver.Version(context.Background(), binary)
 	must.NoError(t, err)
 
 	if version != sqlcdriver.PinnedVersion {
-		t.Skipf("sqlc on PATH is %s, not the pinned %s", version, sqlcdriver.PinnedVersion)
+		stop("sqlc on PATH is %s, not the pinned %s", version, sqlcdriver.PinnedVersion)
+
+		return ""
 	}
 
 	return binary

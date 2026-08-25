@@ -92,6 +92,40 @@ func (c corpus) generate(t *testing.T) string {
 	return out
 }
 
+// generateExpectingFailure is generate for the cases where the point is that
+// unison refuses. It returns the first failure rather than failing the test.
+func (c corpus) generateExpectingFailure(t *testing.T) (string, error) {
+	t.Helper()
+
+	binary := buildUnison(t)
+	sqlc := findSQLC(t)
+
+	root := t.TempDir()
+	out := filepath.Join(root, "out")
+
+	must.NoError(t, os.MkdirAll(out, 0o750))
+
+	list := c.dialects
+	if len(list) == 0 {
+		list = dialects
+	}
+
+	options := c.options
+	if options == "" {
+		options = corpusOptions
+	}
+
+	for _, dialect := range list {
+		dir := c.stage(t, root, dialect, binary, options)
+
+		if _, err := sqlcdriver.Run(t.Context(), sqlc, dir, "generate"); err != nil {
+			return out, err
+		}
+	}
+
+	return out, nil
+}
+
 // stage writes one dialect's schema, queries, and sqlc config into its own
 // directory under root, with `out:` pointing at root/out.
 //
@@ -217,21 +251,36 @@ func buildUnison(t *testing.T) string {
 	return builtBinary
 }
 
-// findSQLC locates the pinned sqlc, skipping the test when it is absent so a
-// clone without it still runs the rest of the suite.
+// findSQLC locates the pinned sqlc.
+//
+// Locally it skips when sqlc is absent or the wrong version, so a fresh clone
+// still runs the rest of the suite. In CI, where UNISON_REQUIRE_SQLC is set, the
+// same conditions fail instead: these are the tests that drive the real
+// analyzer, and a suite that silently skips them has checked nothing.
 func findSQLC(t *testing.T) string {
 	t.Helper()
 
+	required := os.Getenv(sqlcdriver.RequireEnvVar) != ""
+
+	stop := t.Skipf
+	if required {
+		stop = t.Fatalf
+	}
+
 	binary, err := exec.LookPath("sqlc")
 	if err != nil {
-		t.Skip("sqlc is not on PATH; skipping the round trip against the real analyzer")
+		stop("sqlc is not on PATH, and the pinned %s is needed to drive the real analyzer", sqlcdriver.PinnedVersion)
+
+		return ""
 	}
 
 	version, err := sqlcdriver.Version(context.Background(), binary)
 	must.NoError(t, err)
 
 	if version != sqlcdriver.PinnedVersion {
-		t.Skipf("sqlc on PATH is %s, not the pinned %s", version, sqlcdriver.PinnedVersion)
+		stop("sqlc on PATH is %s, not the pinned %s", version, sqlcdriver.PinnedVersion)
+
+		return ""
 	}
 
 	return binary

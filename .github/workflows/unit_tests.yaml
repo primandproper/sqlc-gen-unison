@@ -36,5 +36,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      # The suite drives the real, pinned sqlc; the tests that do not have it
+      # skip. Installing it from the same file the Go code pins means the two
+      # cannot drift, and UNISON_REQUIRE_SQLC turns those skips into failures
+      # here — a CI run that quietly skipped them would have checked nothing.
+      - name: Install the pinned sqlc
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < internal/sqlcdriver/sqlc-version)"
+
+          go install "github.com/sqlc-dev/sqlc/cmd/sqlc@${version}"
+          sqlc version
+
       - name: run unit tests
+        env:
+          UNISON_REQUIRE_SQLC: "1"
         run: make test
