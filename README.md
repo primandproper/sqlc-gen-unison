@@ -81,6 +81,16 @@ unison check      # statically check every dialect's SQL, generate nothing
 Queries carry the same name and annotation in every dialect's file — `-- name:
 CreateUser :one` in all three — and the query name is the join key.
 
+**Do not use `RETURNING`.** Postgres can write a create as `INSERT ... RETURNING`
+and analyze it as `:one`; MySQL has no `RETURNING`, and sqlc analyzes one
+statement per query, so there is no way to spell insert-then-read-back as a
+single `:one` there. unison does not bridge that — doing so would mean pairing
+two queries by convention and emitting a method that makes two round trips,
+which is reconciling a divergent shape, and reconciliation is the one thing this
+tool refuses. Write creates as `:exec` and read back with a separate query. A
+`RETURNING` create on one dialect and not another is a divergence, and fails to
+compile like any other.
+
 **Render the per-dialect schema files from a single source.** Each invocation sees
 only its own dialect's catalog, so drift a query touches is caught — a missing
 column fails that dialect's analysis, a differently-typed one diverges the shape

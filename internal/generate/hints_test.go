@@ -47,6 +47,35 @@ func TestUnderTypedColumnIsRefusedWithAnActionableError(t *testing.T) {
 	}
 }
 
+// TestNullAsSQLConvergesAndCompiles walks the corpus through the other nullable
+// style §8 offers.
+//
+// The corpus generates with pointers, so without this the sql.Null* path would
+// ship as an option nothing had ever run over a real query set. It is checked
+// end to end rather than in the emitter alone because the interesting failure is
+// a missing import, which parses fine and does not compile.
+func TestNullAsSQLConvergesAndCompiles(t *testing.T) {
+	t.Parallel()
+
+	out := corpus{options: corpusOptions + "          null_as: sql\n"}.generate(t)
+	files := readAll(t, out)
+
+	types := files["types.go"]
+
+	test.StrContains(t, types, "sql.NullTime")
+	test.StrContains(t, types, "sql.NullString")
+	test.StrContains(t, types, `"database/sql"`)
+
+	// A type_override is the final type either way, so null_as does not reach
+	// it: result_limit is the only nullable integer in the corpus, and it was
+	// overridden to a plain int64.
+	test.StrContains(t, types, "ResultLimit")
+	test.StrNotContains(t, types, "sql.NullInt64")
+
+	output, err := compilePackage(t, out)
+	must.NoError(t, err, must.Sprintf("the sql.Null* package did not compile:\n%s", output))
+}
+
 // TestHintsMakeSQLiteConverge is the other half: with the hints supplied, the
 // weak engine produces the same shared shape as the strong ones.
 //

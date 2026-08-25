@@ -197,8 +197,13 @@ func emitQuerier(pkg *ir.Package) (string, error) {
 // That is the point of this package: the params type, the row type, and the
 // method signature are the same on every dialect, so nothing above this line
 // knows or cares which database is underneath.
-type Querier interface {
 `)
+
+	if hasExecRows(pkg) {
+		b.WriteString(execRowsNote)
+	}
+
+	b.WriteString("type Querier interface {\n")
 
 	for i := range pkg.Queries {
 		query := &pkg.Queries[i]
@@ -209,12 +214,50 @@ type Querier interface {
 		}
 
 		fmt.Fprintf(&b, "\t// %s runs the %s query.\n", query.Name, query.Command)
+
+		if query.Command == ir.CommandExecRows {
+			b.WriteString("\t//\n\t// The count means different things on different engines; see the note\n\t// on Querier.\n")
+		}
+
 		fmt.Fprintf(&b, "\t%s\n", signature)
 	}
 
 	b.WriteString("}\n")
 
 	return header(pkg) + imports.render() + b.String(), nil
+}
+
+// execRowsNote is emitted above Querier when the package has any :execrows
+// query.
+//
+// It is one fact about three engines rather than a fact about any one method,
+// and a consumer reads this file to learn the API — so it goes here rather than
+// being repeated on each signature. It is emitted at all because it is the last
+// row of §7's divergence table the compiler cannot reach: every dialect returns
+// an int64, so a query that gates on the count compiles everywhere and means
+// something different on one of them.
+const execRowsNote = `//
+// # A note on the :execrows count
+//
+// MySQL reports rows *changed*: an UPDATE that sets a column to the value it
+// already held affects zero rows there. Postgres and SQLite report rows
+// *matched*, and count that same UPDATE as one.
+//
+// So a statement that gates on the count — treating zero as "not found" — is
+// correct on two engines and wrong on the third. Either give it a predicate
+// that discriminates, or set clientFoundRows=true in the MySQL DSN, which
+// switches MySQL to matched semantics.
+`
+
+// hasExecRows reports whether any query in the package returns a row count.
+func hasExecRows(pkg *ir.Package) bool {
+	for i := range pkg.Queries {
+		if pkg.Queries[i].Command == ir.CommandExecRows {
+			return true
+		}
+	}
+
+	return false
 }
 
 // emitTypes renders types.go: the params and row structs.

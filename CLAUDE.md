@@ -30,6 +30,14 @@ There is deliberately **no merge step, no hash, and no promotion pass**. When so
 the fix is never to add one. Shape divergence is *refused, not reconciled* (§7); the fix happens in
 the `.sql`.
 
+§7's divergence table is settled as follows. The MySQL `LIMIT` row is handled by `rename_params`,
+because no argument name satisfies all three engines. The reserved-word and `CURRENT_TIMESTAMP`
+rows are sqlc's to catch, per dialect. The rows-changed row is emitted as a note above `Querier`,
+since every dialect returns an `int64` and the compiler cannot reach it. **The `RETURNING` row is
+resolved as "do not use `RETURNING`"** — creates are `:exec` plus a separate read-back query.
+Bridging it would mean pairing two queries by convention and emitting two round trips, which is
+reconciliation. `TestReturningIsNotAConvergentShape` pins that.
+
 ## Two modes, one binary
 
 - **Plugin mode** — the no-args root behavior. sqlc writes a `CodeGenRequest` protobuf to stdin and

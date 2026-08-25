@@ -15,10 +15,27 @@ import (
 // That is the point of this package: the params type, the row type, and the
 // method signature are the same on every dialect, so nothing above this line
 // knows or cares which database is underneath.
+//
+// # A note on the :execrows count
+//
+// MySQL reports rows *changed*: an UPDATE that sets a column to the value it
+// already held affects zero rows there. Postgres and SQLite report rows
+// *matched*, and count that same UPDATE as one.
+//
+// So a statement that gates on the count — treating zero as "not found" — is
+// correct on two engines and wrong on the third. Either give it a predicate
+// that discriminates, or set clientFoundRows=true in the MySQL DSN, which
+// switches MySQL to matched semantics.
 type Querier interface {
 	// ArchiveAccount runs the :execrows query.
+	//
+	// The count means different things on different engines; see the note
+	// on Querier.
 	ArchiveAccount(ctx context.Context, db DBTX, arg ArchiveAccountParams) (int64, error)
 	// ArchiveUser runs the :execrows query.
+	//
+	// The count means different things on different engines; see the note
+	// on Querier.
 	ArchiveUser(ctx context.Context, db DBTX, arg ArchiveUserParams) (int64, error)
 	// CreateAccount runs the :exec query.
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
@@ -39,7 +56,13 @@ type Querier interface {
 	// ListUsers runs the :many query.
 	ListUsers(ctx context.Context, db DBTX, arg ListUsersParams) ([]ListUsersRow, error)
 	// UpdateAccount runs the :execrows query.
+	//
+	// The count means different things on different engines; see the note
+	// on Querier.
 	UpdateAccount(ctx context.Context, db DBTX, arg UpdateAccountParams) (int64, error)
 	// UpdateUser runs the :execrows query.
+	//
+	// The count means different things on different engines; see the note
+	// on Querier.
 	UpdateUser(ctx context.Context, db DBTX, arg UpdateUserParams) (int64, error)
 }

@@ -164,6 +164,58 @@ func TestRetypedColumnIsCompileError(t *testing.T) {
 	test.StrContains(t, output, "FirstName")
 }
 
+// TestReturningIsNotAConvergentShape is §7's first row, decided.
+//
+// Postgres can write a create as `INSERT ... RETURNING` and analyze it as :one.
+// MySQL cannot: it has no RETURNING, and sqlc analyzes one statement per query,
+// so there is no way to spell insert-then-read-back as a single :one there.
+//
+// unison does not bridge that. It could only do so by pairing two queries under
+// a naming convention and emitting a method that makes two round trips, which is
+// a reconciliation — and reconciling divergent shapes is the thing this tool
+// refuses. So the rule is the authoring one: write creates as :exec and read
+// back with a separate query, which is what the corpus does.
+//
+// This test is what makes that a rule rather than a preference. A projection
+// that exists on one dialect and not another is a divergence, and it fails to
+// compile like every other divergence — no silent fallback, as §7 ends.
+func TestReturningIsNotAConvergentShape(t *testing.T) {
+	t.Parallel()
+
+	out, err := corpus{
+		mutate: func(dialect, sql string) string {
+			if dialect != "postgresql" {
+				return sql
+			}
+
+			// The create that every dialect writes as :exec, rewritten the way
+			// a Postgres author reaching for RETURNING would write it: a real
+			// projection Postgres analyzes happily and MySQL cannot express.
+			sql = strings.Replace(sql,
+				"-- name: CreateUser :exec",
+				"-- name: CreateUser :one", 1)
+
+			return strings.Replace(sql,
+				");\n\n-- name: GetUser",
+				") RETURNING *;\n\n-- name: GetUser", 1)
+		},
+	}.generateExpectingFailure(t)
+
+	// It may fail at generation — Postgres reports a projection the others do
+	// not have — or at compilation, when the shared files disagree. Either is
+	// the refusal working; what must not happen is a package that builds.
+	if err != nil {
+		test.StrContains(t, err.Error(), "CreateUser")
+
+		return
+	}
+
+	output, compileErr := compilePackage(t, out)
+	must.Error(t, compileErr,
+		must.Sprintf("a RETURNING-shaped create on one dialect compiled:\n%s", output))
+	test.StrContains(t, output, "CreateUser")
+}
+
 // dropQuery removes a named query and its statement from a query file.
 func dropQuery(sql, name string) string {
 	marker := "-- name: " + name + " "

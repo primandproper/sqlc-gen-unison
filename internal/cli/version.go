@@ -22,8 +22,8 @@ func (a *application) newVersionCommand() *cobra.Command {
 			// Version data goes to stdout (cobra's Print* default to stderr) so
 			// `unison version` stays machine-parseable.
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
-				"commit:      %s\nbuilt:       %s\ncommit time: %s\ngo:          %s\nplatform:    %s/%s\n",
-				version.CommitHash, version.BuildTime, version.CommitTime,
+				"version:     %s\ncommit:      %s\nbuilt:       %s\ncommit time: %s\ngo:          %s\nplatform:    %s/%s\n",
+				version.Version, version.CommitHash, version.BuildTime, version.CommitTime,
 				runtime.Version(), runtime.GOOS, runtime.GOARCH,
 			)
 

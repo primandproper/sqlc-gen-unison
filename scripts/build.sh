@@ -31,7 +31,21 @@ if [[ "${1:-}" == "-o" ]]; then
 	fi
 	[[ -z "$COMMIT_TIME" ]] && COMMIT_TIME="unknown"
 
-	LDFLAGS="-s -w -X ${VERSION_PKG}.CommitHash=${COMMIT_HASH} -X ${VERSION_PKG}.BuildTime=${BUILD_TIME} -X ${VERSION_PKG}.CommitTime=${COMMIT_TIME}"
+	# VERSION is the only build metadata that reaches generated code, so it is
+	# resolved differently from the rest: a release names itself, and everything
+	# else says so plainly.
+	#
+	# It is deliberately not COMMIT_HASH. Generated files carry this string, and
+	# consumers gate CI on a clean tree after regeneration — a hash would turn
+	# every unrelated rebuild of unison into a diff in somebody else's
+	# repository. A tag moves it; a commit does not.
+	VERSION="${UNISON_VERSION:-}"
+	if [[ -z "$VERSION" ]] && command -v git &>/dev/null; then
+		VERSION=$(git describe --tags --exact-match 2>/dev/null || true)
+	fi
+	[[ -z "$VERSION" ]] && VERSION="dev"
+
+	LDFLAGS="-s -w -X ${VERSION_PKG}.Version=${VERSION} -X ${VERSION_PKG}.CommitHash=${COMMIT_HASH} -X ${VERSION_PKG}.BuildTime=${BUILD_TIME} -X ${VERSION_PKG}.CommitTime=${COMMIT_TIME}"
 	go build -trimpath -ldflags "$LDFLAGS" -o "$OUT" "$PACKAGE"
 else
 	PACKAGE_LIST="${1:?missing package list}"
