@@ -27,14 +27,51 @@ const (
 	NullSQL NullStyle = "sql"
 )
 
-// Options is the plugin's half of unison.yaml.
+// Options is the plugin's half of unison.yaml, and everything in it is part of
+// the convergence contract: every invocation receives the same options, so any
+// decision made from them is made identically by every dialect.
+//
+// The field documentation lives here rather than beside each field because this
+// repository's formatter runs fieldalignment, which reorders struct fields and
+// does not carry their comments along.
+//
+//   - Package names the Go package the emitted files declare.
+//
+//   - Roster is every dialect in the run, sorted, and it is the reason
+//     convergent emission works: an invocation only ever analyzes one dialect,
+//     but it emits a constructor that switches over all of them. The
+//     orchestrator fills it from the keys of unison.yaml's `schemas:` map, so
+//     the roster and the schemas cannot disagree. It is not settable from the
+//     options block.
+//
+//   - TablePrefixVar asks for the {{prefix}} marker of §9.
+//
+//   - NullAs selects the nullable representation. Empty means NullPointer.
+//
+//   - TypeOverrides replace what the analyzer inferred, and serve two jobs that
+//     turn out to be one: naming a domain type for a column whose database type
+//     is merely its storage, and supplying a type where an analyzer resolved
+//     none. SQLite is the weak engine §8 warns about, but it is not the only
+//     one — Postgres types a COALESCE'd LIMIT as `any` too. An override is the
+//     final type, nullability included; write *int64 to get a pointer.
+//
+//   - RenameParams maps, per dialect, the name an analyzer reported onto the
+//     name the shared shape uses. It exists because one divergence in §7's
+//     table has no authoring-side fix: MySQL accepts only a bare placeholder in
+//     LIMIT — sqlc.arg() is a syntax error there — and names that parameter
+//     `limit`, while Postgres rejects `limit` as an argument name because it is
+//     reserved. No spelling satisfies all three engines, so the name converges
+//     here instead of in the .sql. It is deliberately not a general reconciler:
+//     it renames, and cannot change a type, add a parameter, or reorder
+//     anything. A genuine shape divergence still diverges, and still fails to
+//     compile.
 type Options struct {
-	RenameParams   map[string]map[string]string `json:"rename_params"`
-	Package        string                       `json:"package"`
-	NullAs         NullStyle                    `json:"null_as"`
-	Roster         []string                     `json:"roster"`
-	TypeOverrides  []TypeOverride               `json:"type_overrides"`
-	TablePrefixVar bool                         `json:"table_prefix_var"`
+	RenameParams   map[string]map[string]string `json:"rename_params"    yaml:"rename_params"`
+	Package        string                       `json:"package"          yaml:"-"`
+	NullAs         NullStyle                    `json:"null_as"          yaml:"null_as"`
+	Roster         []string                     `json:"roster"           yaml:"-"`
+	TypeOverrides  []TypeOverride               `json:"type_overrides"   yaml:"type_overrides"`
+	TablePrefixVar bool                         `json:"table_prefix_var" yaml:"table_prefix_var"`
 }
 
 // TypeOverride replaces the type unison would otherwise infer for a column.
@@ -43,8 +80,15 @@ type Options struct {
 // it appears — which is the form a parameter needs, since a parameter built from
 // an expression belongs to no table.
 type TypeOverride struct {
-	Column string `json:"column"`
-	GoType string `json:"go_type"`
+	Column string `json:"column"  yaml:"column"`
+	GoType string `json:"go_type" yaml:"go_type"`
+}
+
+// Normalize validates and canonicalizes options assembled by the orchestrator,
+// which reads them from YAML rather than off the wire. Both paths land here, so
+// a config that the orchestrator accepts is one the plugin will accept.
+func (o *Options) Normalize() error {
+	return o.normalize()
 }
 
 // Parse decodes the options sqlc forwarded from the consumer's config.

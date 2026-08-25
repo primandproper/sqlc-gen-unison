@@ -6,18 +6,12 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/primandproper/sqlc-gen-unison/internal/cli/pluginenv"
 	"github.com/primandproper/sqlc-gen-unison/internal/generate"
 	"github.com/primandproper/sqlc-gen-unison/internal/protocol"
 
 	pb "github.com/sqlc-dev/plugin-sdk-go/plugin"
 )
-
-// LogLevelEnvVar names the one environment variable unison reads. Plugin mode
-// has no flags to take a log level from — sqlc chooses the arguments — so this
-// is how a consumer turns on debug logging for a plugin run. It is passed
-// through by the orchestrator, which puts it in the rendered sqlc config's
-// `env:` list.
-const LogLevelEnvVar = "UNISON_LOG_LEVEL"
 
 // runPlugin serves the one request sqlc sends and returns.
 //
@@ -25,7 +19,7 @@ const LogLevelEnvVar = "UNISON_LOG_LEVEL"
 // first argument, which cobra would read as a subcommand, and there is no
 // command here for it to find.
 func runPlugin(ctx context.Context, stdin, stdout, stderr *os.File) error {
-	level, err := parseLevel(os.Getenv(LogLevelEnvVar))
+	level, err := parseLevel(os.Getenv(pluginenv.LogLevelEnvVar))
 	if err != nil {
 		return err
 	}

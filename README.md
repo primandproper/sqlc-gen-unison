@@ -29,6 +29,77 @@ divergence, in generated code, naming the query.
 
 There is no merge step, no hash, no promotion pass. That is the point.
 
+## Using it
+
+unison needs sqlc on PATH — it does not analyze SQL, sqlc does — and one
+`unison.yaml` at the root of the project that consumes the generated package:
+
+```yaml
+sqlc_version: 1.31.1
+package: identitydb
+out: internal/identitydb
+
+# The keys of `schemas:` are the dialect roster. There is deliberately no
+# separate `dialects:` list: two places to say the same thing is one place to
+# say it differently.
+schemas:
+  postgresql: migrations/postgres.sql
+  mysql: migrations/mysql.sql
+  sqlite: migrations/sqlite.sql
+
+queries:
+  postgresql: queries/postgres/
+  mysql: queries/mysql/
+  sqlite: queries/sqlite/
+
+options:
+  # Rewrite table identifiers to {{prefix}}, substituted once at construction.
+  table_prefix_var: true
+
+  # Where an analyzer resolves no type — SQLite often, Postgres for a COALESCE'd
+  # LIMIT — say what it is. An override is the final Go type, nullability
+  # included; write *int64 for a pointer.
+  type_overrides:
+    - {column: "*.result_limit", go_type: int64}
+    - {column: "*.scope", go_type: github.com/example/tenancy.Scope}
+
+  # MySQL accepts only a bare placeholder in LIMIT and names it `limit`;
+  # Postgres rejects `limit` as an argument name because it is reserved. No
+  # spelling satisfies all three, so the name converges here.
+  rename_params:
+    mysql:
+      limit: result_limit
+```
+
+Then:
+
+```bash
+unison generate   # render a sqlc config per dialect, run sqlc once for each
+unison check      # statically check every dialect's SQL, generate nothing
+```
+
+Queries carry the same name and annotation in every dialect's file — `-- name:
+CreateUser :one` in all three — and the query name is the join key.
+
+## What it emits
+
+Into one directory, from N runs:
+
+| file | written by | contents |
+| --- | --- | --- |
+| `db.go` | every dialect | `DBTX`, the `Dialect` enum, `New` |
+| `types.go` | every dialect | one params and one row struct per query |
+| `querier.go` | every dialect | the `Querier` interface |
+| `queries_<dialect>.go` | that dialect | its SQL, its argument order, its methods |
+
+```go
+q, err := identitydb.New(identitydb.DialectPostgreSQL, "tenant_")
+user, err := q.GetUser(ctx, db, identitydb.GetUserParams{ID: id, Scope: scope})
+```
+
+The dialect is an emitted enum rather than a string, so a typo is a compile
+error in the one tool whose thesis is moving errors earlier.
+
 ## Requirements
 
 Requires **Go 1.27+** and a pinned **sqlc**. [Docker](https://www.docker.com/) is

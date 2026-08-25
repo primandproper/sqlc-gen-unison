@@ -38,6 +38,24 @@ the `.sql`.
   and shells out to the pinned sqlc once per dialect, each run pointing `out:` at the same directory.
 - **`unison check`** — compiles all dialects, generates nothing.
 
+## Things that will cost you a day if you rediscover them
+
+- **`Parameter.Number` is not placeholder order.** On MySQL the bare `?` that LIMIT requires is
+  numbered 1 while appearing last in the text. Read parameters in **list order**; sqlc's own Go
+  generator does. Sorting by `Number` transposes arguments silently.
+- **MySQL does not deduplicate parameters.** A named argument used three times arrives as three
+  parameters with the same name, so the corpus's list queries bind 16 positions from 8 fields.
+- **sqlc joins absolute paths in a config with the config's own directory**, so an absolute
+  `schema:` does not work. The orchestrator writes relative paths into a staging directory.
+- **sqlc's `codegen:` block has no `env:` field in 1.31.1**, and it discards a plugin's stderr on
+  success, surfacing it only inside the error when a plugin fails.
+- **Postgres reports built-ins as `pg_catalog.*`**; the type mapper strips that prefix.
+- **The Postgres catalog carries all of `information_schema` and `pg_catalog`** — several hundred
+  tables, including ones named `columns` and `tables`. Prefix marking filters to the catalog's
+  default schema.
+- **`fieldalignment` reorders struct fields and drops their comments.** Document fields in the
+  type's doc comment, not beside them.
+
 ## Hard constraints
 
 - **stdout is the protocol channel in plugin mode.** All logging is stdlib `slog` to **stderr**.
@@ -57,6 +75,16 @@ the `.sql`.
 
 - `cmd/main/main.go` — thin entrypoint: signal-cancellable context → `cli.Execute`.
 - `internal/cli/` — cobra root command and subcommands. Owns the plugin-mode/stdout rule.
+  `internal/cli/pluginenv` names the one environment variable, shared with the orchestrator.
+- `internal/protocol/` — the sqlc plugin wire format, and nowhere else. Decides plugin mode.
+- `internal/options/` — `unison.yaml`'s options, one definition serving both the orchestrator
+  (which writes them into the rendered sqlc config) and the plugin (which parses them back).
+- `internal/converge/` — the convergence core: sqlc's analysis → IR. The type mapper (§8) and
+  the prefix markers (§9) live here. The only package besides `protocol` that imports plugin-sdk-go.
+- `internal/ir/` — the language-neutral IR (§5). Imports no protobuf and names no Go type.
+- `internal/emit/gogen/` — the one emitter: IR → Go source.
+- `internal/orchestrator/` — `unison.yaml`, per-dialect sqlc config rendering, `generate` and `check`.
+- `internal/sqlcdriver/` — runs the pinned sqlc, and holds the pin.
 - `version/` — build metadata (`CommitHash`/`BuildTime`/`CommitTime`), injected via `-ldflags` by
   `scripts/build.sh`.
 - `testdata/` — the golden corpus: platform-go's identity store, vendored frozen. It is a fixture,
