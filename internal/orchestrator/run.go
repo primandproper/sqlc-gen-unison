@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/primandproper/sqlc-gen-unison/internal/cli/pluginenv"
 	"github.com/primandproper/sqlc-gen-unison/internal/sqlcdriver"
 
 	"go.yaml.in/yaml/v3"
@@ -144,9 +145,19 @@ type sqlcConfig struct {
 	SQL     []sqlcSQLConfig `yaml:"sql"`
 }
 
+// sqlcPlugin is the `plugins:` entry naming unison.
+//
+// Env is not optional decoration. sqlc does not hand a process plugin the
+// environment it was itself run with: it builds one containing SQLC_VERSION and
+// then only the keys listed here. A variable this list omits does not reach
+// plugin mode at all, however faithfully the plugin reads it.
+//
+// Note that this is the `plugins:` block. sqlc's `codegen:` block has no `env:`
+// field in 1.31.1; they are different blocks, and only this one carries it.
 type sqlcPlugin struct {
 	Name    string      `yaml:"name"`
 	Process sqlcProcess `yaml:"process"`
+	Env     []string    `yaml:"env"`
 }
 
 type sqlcProcess struct {
@@ -191,7 +202,11 @@ func (r *Runner) renderConfig(cfg *Config, dialect, staging, out string) (string
 
 	rendered := sqlcConfig{
 		Version: "2",
-		Plugins: []sqlcPlugin{{Name: PluginName, Process: sqlcProcess{Cmd: r.Self}}},
+		Plugins: []sqlcPlugin{{
+			Name:    PluginName,
+			Env:     []string{pluginenv.LogLevelEnvVar},
+			Process: sqlcProcess{Cmd: r.Self},
+		}},
 		SQL: []sqlcSQLConfig{{
 			Engine:  dialect,
 			Schema:  schema,

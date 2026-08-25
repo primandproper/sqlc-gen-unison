@@ -19,22 +19,17 @@ import (
 // first argument, which cobra would read as a subcommand, and there is no
 // command here for it to find.
 func runPlugin(ctx context.Context, stdin, stdout, stderr *os.File) error {
-	level, err := parseLevel(os.Getenv(pluginenv.LogLevelEnvVar))
-	if err != nil {
-		return err
-	}
-
-	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-
-	err = protocol.Serve(ctx, stdin, stdout, func(ctx context.Context, request *pb.GenerateRequest) ([]*pb.File, error) {
-		return generate.Files(ctx, logger, request)
-	})
+	err := servePlugin(ctx, stdin, stdout, stderr)
 	if err != nil {
 		// Plugin mode does not go through cobra, so nothing else would print
-		// this. sqlc reports only that the command failed — it does not relay
-		// the plugin's stderr — so an unprinted error reaches the consumer as
-		// "error running command" and nothing else, which is the difference
-		// between a type they need to override and a mystery.
+		// this. sqlc relays a failing plugin's stderr and nothing else, so an
+		// unprinted error reaches the consumer as "error running command" and
+		// nothing else, which is the difference between a type they need to
+		// override and a mystery.
+		//
+		// Every failure gets here, not just the ones from generation. A level
+		// this process could not parse used to exit non-zero without a word,
+		// which is the same mystery arriving one step earlier.
 		//nolint:errcheck // Reporting is best effort; the error is returned either way.
 		fmt.Fprintln(stderr, err)
 
@@ -42,4 +37,19 @@ func runPlugin(ctx context.Context, stdin, stdout, stderr *os.File) error {
 	}
 
 	return nil
+}
+
+// servePlugin is runPlugin without the reporting, so that reporting has exactly
+// one place to happen.
+func servePlugin(ctx context.Context, stdin, stdout, stderr *os.File) error {
+	level, err := parseLevel(os.Getenv(pluginenv.LogLevelEnvVar))
+	if err != nil {
+		return err
+	}
+
+	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+
+	return protocol.Serve(ctx, stdin, stdout, func(ctx context.Context, request *pb.GenerateRequest) ([]*pb.File, error) {
+		return generate.Files(ctx, logger, request)
+	})
 }

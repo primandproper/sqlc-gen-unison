@@ -55,8 +55,13 @@ reconciliation. `TestReturningIsNotAConvergentShape` pins that.
   parameters with the same name, so the corpus's list queries bind 16 positions from 8 fields.
 - **sqlc joins absolute paths in a config with the config's own directory**, so an absolute
   `schema:` does not work. The orchestrator writes relative paths into a staging directory.
-- **sqlc's `codegen:` block has no `env:` field in 1.31.1**, and it discards a plugin's stderr on
-  success, surfacing it only inside the error when a plugin fails.
+- **sqlc's `codegen:` block has no `env:` field in 1.31.1 — but the `plugins:` block does**, and
+  the difference matters: sqlc does not hand a process plugin the environment it was run with. It
+  builds a fresh one holding `SQLC_VERSION` plus only the keys that `plugins:` list names, so a
+  variable missing from it never reaches plugin mode however faithfully the plugin reads it. That
+  is why `renderConfig` emits `env: [UNISON_LOG_LEVEL]`, and
+  `TestLogLevelReachesPluginMode` pins it. sqlc also discards a plugin's stderr on success,
+  surfacing it only inside the error when a plugin fails.
 - **Postgres reports built-ins as `pg_catalog.*`**; the type mapper strips that prefix.
 - **The Postgres catalog carries all of `information_schema` and `pg_catalog`** — several hundred
   tables, including ones named `columns` and `tables`. Prefix marking filters to the catalog's

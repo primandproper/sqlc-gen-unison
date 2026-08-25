@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/primandproper/sqlc-gen-unison/internal/cli/pluginenv"
 	"github.com/primandproper/sqlc-gen-unison/internal/orchestrator"
 	"github.com/primandproper/sqlc-gen-unison/internal/sqlcdriver"
 
@@ -322,4 +323,33 @@ func findSQLC(t *testing.T) string {
 	}
 
 	return binary
+}
+
+// TestLogLevelReachesPluginMode proves that UNISON_LOG_LEVEL crosses the
+// process boundary into the plugin, which is not something rendering the config
+// correctly is enough to guarantee.
+//
+// sqlc does not pass a process plugin the environment it was itself run with.
+// It builds a fresh one holding SQLC_VERSION plus only the keys the `plugins:`
+// block's `env:` list names, so a variable missing from that list never arrives,
+// however faithfully plugin mode reads it. Rendering the key is therefore load
+// bearing, and asserting on the rendered YAML would only restate the code.
+//
+// So this drives the whole chain and observes the far end. An unparseable level
+// is refused by plugin mode at startup, and a failing plugin is the one case
+// where sqlc relays the plugin's stderr instead of discarding it — so the
+// message coming back out is proof the value arrived. Drop the env line from
+// renderConfig and generation succeeds instead, which is the failure this test
+// exists to catch.
+func TestLogLevelReachesPluginMode(t *testing.T) {
+	t.Setenv(pluginenv.LogLevelEnvVar, "nonsense")
+
+	project := stageProject(t)
+	runner, cfg := runnerFor(t, project)
+
+	err := runner.Generate(t.Context(), cfg)
+
+	must.Error(t, err)
+	test.StrContains(t, err.Error(), `unknown log level "nonsense"`,
+		test.Sprint("the plugin should have refused the level it was handed"))
 }
