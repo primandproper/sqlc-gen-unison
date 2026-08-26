@@ -9,13 +9,25 @@ dependency.** Nothing here is imported, and unison never reads it at runtime.
 
 It is the corpus because it has the richest shape variety in reach — creates,
 keyset pagination, both-counts list subqueries, scoped predicates, nullable
-arguments, and all five in-scope annotations (`:one`, `:many`, `:exec`,
-`:execrows`) across three dialects that were authored to agree.
+arguments, variable-length `IN` lists, and all five in-scope annotations
+(`:one`, `:many`, `:exec`, `:execrows`) across three dialects that were authored
+to agree.
 
 ## What is here, and how it was produced
 
 `queries/<dialect>.sql` are the committed `<dialect>_generated.sql` files from
-`identity/internal/queries`, copied verbatim.
+`identity/internal/queries`, copied verbatim — with one appended exception,
+below.
+
+`AssignUserRole` and `ListRolesForUsers` were **authored here**, not copied.
+They are the corpus's variable-length `IN` list, and the source module has no
+canonical spelling to copy because that is precisely the class it still
+hand-builds: `buildSelectUsersByIDs` and `buildSelectRoles` are the escape
+hatches unison closes. They are written the way each engine's static form
+requires — `= ANY(sqlc.arg(user_ids)::TEXT[])` on Postgres,
+`IN (sqlc.slice(user_ids))` on the other two — under one query name, which is
+the whole claim under test. When the source module's port lands, these should be
+replaced by whatever it commits.
 
 `schema/<dialect>.sql` were produced by that package's generator rather than
 copied, because there is no hand-written schema file to copy — the DDL is

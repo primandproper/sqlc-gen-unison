@@ -29,6 +29,7 @@ func fixture(nullAs options.NullStyle, dialect string) *ir.Package {
 	active := ir.Field{Name: "active", Type: ir.Type{Kind: ir.KindBool, Nullable: true}}
 	weight := ir.Field{Name: "weight", Type: ir.Type{Kind: ir.KindFloat64, Nullable: true}}
 	blob := ir.Field{Name: "payload", Type: ir.Type{Kind: ir.KindBytes, Nullable: true}}
+	ids := ir.Field{Name: "ids", Type: ir.Type{Kind: ir.KindString, Slice: true}}
 
 	row := []ir.Field{id, nickname, seenAt, hits, active, weight, blob}
 
@@ -38,18 +39,38 @@ func fixture(nullAs options.NullStyle, dialect string) *ir.Package {
 		{Name: "ListThings", Command: ir.CommandMany, Columns: row},
 		{Name: "TouchThing", Command: ir.CommandExecRows, Params: []ir.Field{id}},
 		{Name: "ReplaceThing", Command: ir.CommandExecResult, Params: []ir.Field{id, nickname}},
+		// A list, and the only parameter — which is the query whose argument
+		// slice has no fixed part at all, and the one the corpus never has,
+		// since every list query there is scoped by something first.
+		{Name: "PickThings", Command: ir.CommandMany, Params: []ir.Field{ids}, Columns: row},
 	}
+
+	// mysql stands for the engines that expand: the analyzer leaves a site in
+	// the text and the method fills it in. postgresql binds the list as one
+	// array, which is Expand left empty. Both are rendered from the same shared
+	// shapes, which is the claim.
+	marker := "/*SLICE:ids*/?"
 
 	statements := make([]ir.Statement, 0, len(queries))
 	for i := range queries {
-		args := make([]string, 0, len(queries[i].Params))
+		sql := "SELECT 1 FROM " + ir.PrefixMarker + "things"
+
+		args := make([]ir.Arg, 0, len(queries[i].Params))
+
 		for j := range queries[i].Params {
-			args = append(args, queries[i].Params[j].Name)
+			arg := ir.Arg{Name: queries[i].Params[j].Name}
+
+			if queries[i].Params[j].Type.Slice && dialect == "mysql" {
+				arg.Expand, arg.Placeholder = marker, "?"
+				sql += " WHERE id IN (" + marker + ")"
+			}
+
+			args = append(args, arg)
 		}
 
 		statements = append(statements, ir.Statement{
 			Name: queries[i].Name,
-			SQL:  "SELECT 1 FROM " + ir.PrefixMarker + "things",
+			SQL:  sql,
 			Args: args,
 		})
 	}
@@ -91,6 +112,46 @@ func TestEmitEveryCommand(t *testing.T) {
 
 	// The :execrows note is emitted because this package has one.
 	test.StrContains(t, querier, "A note on the :execrows count")
+}
+
+// TestEmitListParam covers the one shape whose generated code differs by
+// dialect, from both sides of the seam.
+//
+// The corpus proves it against real analysis; this proves the rendering itself,
+// including the case the corpus does not have — a query whose only parameter is
+// the list, so the argument slice has no fixed part.
+func TestEmitListParam(t *testing.T) {
+	t.Parallel()
+
+	expanding := emitted(t, fixture(options.NullPointer, "mysql"))
+	binding := emitted(t, fixture(options.NullPointer, "postgresql"))
+
+	// One shared field, and one signature, whichever dialect answers it.
+	test.StrContains(t, collapse(expanding["types_generated.go"]), "IDs []string")
+	test.StrContains(t, collapse(binding["types_generated.go"]), "IDs []string")
+
+	// The helper and the note are functions of the shared shapes, so both
+	// dialects emit them — byte-identically, which is what keeps the shared
+	// files a no-op to overwrite.
+	must.Eq(t, binding["db_generated.go"], expanding["db_generated.go"])
+	must.Eq(t, binding["querier_generated.go"], expanding["querier_generated.go"])
+	test.StrContains(t, binding["db_generated.go"], "func slicePlaceholders(placeholder string, n int) string {")
+	test.StrContains(t, binding["querier_generated.go"], "A note on empty lists")
+
+	// Postgres binds the slice as it stands, and needs none of the machinery.
+	test.StrContains(t, binding["queries_postgresql_generated.go"], "q.pickThings,\n\t\targ.IDs,\n\t)")
+	test.StrNotContains(t, binding["queries_postgresql_generated.go"], "slicePlaceholders(")
+
+	// MySQL expands, and the argument slice is sized to the list alone.
+	mysql := expanding["queries_mysql_generated.go"]
+	test.StrContains(t, mysql, "args := make([]any, 0, len(arg.IDs))")
+	test.StrContains(t, mysql, `strings.Replace(query, "/*SLICE:ids*/?", slicePlaceholders("?", len(arg.IDs)), 1)`)
+	test.StrContains(t, mysql, "for _, v := range arg.IDs {\n\t\targs = append(args, v)\n\t}")
+	test.StrContains(t, mysql, "db.QueryContext(ctx, query, args...)")
+
+	// A query with no list is untouched by any of it, on the dialect that
+	// expands as much as on the one that does not.
+	test.StrContains(t, mysql, "db.QueryRowContext(ctx, q.getThing,\n\t\targ.ID,\n\t)")
 }
 
 // TestEmitNullPointer is the default nullable style.

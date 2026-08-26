@@ -23,6 +23,14 @@ WHERE archived_at IS NULL
 	AND id = ?1
 	AND scope = ?2`
 
+const assignUserRoleSQLite = `INSERT INTO {{prefix}}identity_user_roles (
+	user_id,
+	role
+) VALUES (
+	?1,
+	?2
+)`
+
 const createAccountSQLite = `INSERT INTO {{prefix}}identity_accounts (
 	id,
 	scope,
@@ -308,6 +316,16 @@ WHERE {{prefix}}identity_invitations.created_at > COALESCE(?1, (SELECT datetime(
 ORDER BY {{prefix}}identity_invitations.id ASC
 LIMIT COALESCE(?8, 50)`
 
+const listRolesForUsersSQLite = `SELECT
+	{{prefix}}identity_user_roles.user_id,
+	{{prefix}}identity_user_roles.role
+FROM {{prefix}}identity_user_roles
+	JOIN {{prefix}}identity_users ON {{prefix}}identity_users.id = {{prefix}}identity_user_roles.user_id
+WHERE {{prefix}}identity_users.archived_at IS NULL
+	AND {{prefix}}identity_users.scope = ?1
+	AND {{prefix}}identity_user_roles.user_id IN (/*SLICE:user_ids*/?)
+ORDER BY {{prefix}}identity_user_roles.user_id ASC, {{prefix}}identity_user_roles.role ASC`
+
 const listUsersSQLite = `SELECT
 	{{prefix}}identity_users.id,
 	{{prefix}}identity_users.scope,
@@ -396,38 +414,42 @@ WHERE archived_at IS NULL
 
 // sqliteQueries answers every query in Querier against sqlite.
 type sqliteQueries struct {
-	archiveAccount   string
-	archiveUser      string
-	createAccount    string
-	createInvitation string
-	createUser       string
-	getAccount       string
-	getInvitation    string
-	getUser          string
-	listAccounts     string
-	listInvitations  string
-	listUsers        string
-	updateAccount    string
-	updateUser       string
+	archiveAccount    string
+	archiveUser       string
+	assignUserRole    string
+	createAccount     string
+	createInvitation  string
+	createUser        string
+	getAccount        string
+	getInvitation     string
+	getUser           string
+	listAccounts      string
+	listInvitations   string
+	listRolesForUsers string
+	listUsers         string
+	updateAccount     string
+	updateUser        string
 }
 
 // newSQLite returns the sqlite querier with prefix substituted into every
 // table name the analyzer identified.
 func newSQLite(prefix string) *sqliteQueries {
 	return &sqliteQueries{
-		archiveAccount:   strings.ReplaceAll(archiveAccountSQLite, prefixMarker, prefix),
-		archiveUser:      strings.ReplaceAll(archiveUserSQLite, prefixMarker, prefix),
-		createAccount:    strings.ReplaceAll(createAccountSQLite, prefixMarker, prefix),
-		createInvitation: strings.ReplaceAll(createInvitationSQLite, prefixMarker, prefix),
-		createUser:       strings.ReplaceAll(createUserSQLite, prefixMarker, prefix),
-		getAccount:       strings.ReplaceAll(getAccountSQLite, prefixMarker, prefix),
-		getInvitation:    strings.ReplaceAll(getInvitationSQLite, prefixMarker, prefix),
-		getUser:          strings.ReplaceAll(getUserSQLite, prefixMarker, prefix),
-		listAccounts:     strings.ReplaceAll(listAccountsSQLite, prefixMarker, prefix),
-		listInvitations:  strings.ReplaceAll(listInvitationsSQLite, prefixMarker, prefix),
-		listUsers:        strings.ReplaceAll(listUsersSQLite, prefixMarker, prefix),
-		updateAccount:    strings.ReplaceAll(updateAccountSQLite, prefixMarker, prefix),
-		updateUser:       strings.ReplaceAll(updateUserSQLite, prefixMarker, prefix),
+		archiveAccount:    strings.ReplaceAll(archiveAccountSQLite, prefixMarker, prefix),
+		archiveUser:       strings.ReplaceAll(archiveUserSQLite, prefixMarker, prefix),
+		assignUserRole:    strings.ReplaceAll(assignUserRoleSQLite, prefixMarker, prefix),
+		createAccount:     strings.ReplaceAll(createAccountSQLite, prefixMarker, prefix),
+		createInvitation:  strings.ReplaceAll(createInvitationSQLite, prefixMarker, prefix),
+		createUser:        strings.ReplaceAll(createUserSQLite, prefixMarker, prefix),
+		getAccount:        strings.ReplaceAll(getAccountSQLite, prefixMarker, prefix),
+		getInvitation:     strings.ReplaceAll(getInvitationSQLite, prefixMarker, prefix),
+		getUser:           strings.ReplaceAll(getUserSQLite, prefixMarker, prefix),
+		listAccounts:      strings.ReplaceAll(listAccountsSQLite, prefixMarker, prefix),
+		listInvitations:   strings.ReplaceAll(listInvitationsSQLite, prefixMarker, prefix),
+		listRolesForUsers: strings.ReplaceAll(listRolesForUsersSQLite, prefixMarker, prefix),
+		listUsers:         strings.ReplaceAll(listUsersSQLite, prefixMarker, prefix),
+		updateAccount:     strings.ReplaceAll(updateAccountSQLite, prefixMarker, prefix),
+		updateUser:        strings.ReplaceAll(updateUserSQLite, prefixMarker, prefix),
 	}
 }
 
@@ -455,6 +477,16 @@ func (q *sqliteQueries) ArchiveUser(ctx context.Context, db DBTX, arg ArchiveUse
 	}
 
 	return result.RowsAffected()
+}
+
+// AssignUserRole runs the :exec query against sqlite.
+func (q *sqliteQueries) AssignUserRole(ctx context.Context, db DBTX, arg AssignUserRoleParams) error {
+	_, err := db.ExecContext(ctx, q.assignUserRole,
+		arg.UserID,
+		arg.Role,
+	)
+
+	return err
 }
 
 // CreateAccount runs the :exec query against sqlite.
@@ -736,6 +768,49 @@ func (q *sqliteQueries) ListInvitations(ctx context.Context, db DBTX, arg ListIn
 	return items, nil
 }
 
+// ListRolesForUsers runs the :many query against sqlite.
+func (q *sqliteQueries) ListRolesForUsers(ctx context.Context, db DBTX, arg ListRolesForUsersParams) ([]ListRolesForUsersRow, error) {
+	query := q.listRolesForUsers
+
+	args := make([]any, 0, 1+len(arg.UserIDs))
+
+	args = append(args, arg.Scope)
+
+	query = strings.Replace(query, "/*SLICE:user_ids*/?", slicePlaceholders("?", len(arg.UserIDs)), 1)
+
+	for _, v := range arg.UserIDs {
+		args = append(args, v)
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	var items []ListRolesForUsersRow
+
+	for rows.Next() {
+		var i ListRolesForUsersRow
+
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+
+		items = append(items, i)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
 // ListUsers runs the :many query against sqlite.
 func (q *sqliteQueries) ListUsers(ctx context.Context, db DBTX, arg ListUsersParams) ([]ListUsersRow, error) {
 	rows, err := db.QueryContext(ctx, q.listUsers,
@@ -851,6 +926,10 @@ var (
 		ID    string
 		Scope string
 	}(ArchiveUserParams{})
+	_ = struct {
+		UserID string
+		Role   string
+	}(AssignUserRoleParams{})
 	_ = struct {
 		ID                          string
 		Scope                       string
@@ -1033,6 +1112,14 @@ var (
 		FilteredCount    int64
 		TotalCount       int64
 	}(ListInvitationsRow{})
+	_ = struct {
+		Scope   string
+		UserIDs []string
+	}(ListRolesForUsersParams{})
+	_ = struct {
+		UserID string
+		Role   string
+	}(ListRolesForUsersRow{})
 	_ = struct {
 		CreatedAfter    *time.Time
 		CreatedBefore   *time.Time

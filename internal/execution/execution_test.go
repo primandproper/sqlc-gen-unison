@@ -239,6 +239,75 @@ func runQuerierSuite(t *testing.T, ctx context.Context, e env) {
 		test.Eq(t, "UTC", got.TimeZone)
 		test.Nil(t, got.SubscriptionPlanID)
 	})
+
+	t.Run("a list parameter binds a set of any size", func(t *testing.T) {
+		// The shape whose *generated code* differs by dialect rather than only
+		// its text: one bound array on Postgres, one placeholder per element on
+		// the other two. Everything else in the repository passes on a package
+		// that expands the wrong number of placeholders or binds the elements
+		// beside the scope instead of after it — the statement is assembled at
+		// query time, so only a real engine can say it came out right.
+		//
+		// Distinct roles per user, so a transposition cannot compare equal, and
+		// two rows for one user so that a list element bound where the join key
+		// belongs shows up as a missing pair rather than a missing row.
+		assignments := []identitydb.AssignUserRoleParams{
+			{UserID: "u1", Role: "admin"},
+			{UserID: "u1", Role: "member"},
+			{UserID: "u2", Role: "member"},
+			{UserID: "u3", Role: "archived-role"},
+			{UserID: "z9", Role: "other-tenant-role"},
+		}
+
+		for i := range assignments {
+			must.NoError(t, q.AssignUserRole(ctx, e.db, assignments[i]))
+		}
+
+		// Four elements expand to four placeholders, and the scope bound ahead
+		// of them still excludes the other tenant. u3 is archived and z9 is
+		// another tenant's, so asking for both proves the list narrows the set
+		// rather than replacing the predicate.
+		rows, listErr := q.ListRolesForUsers(ctx, e.db, identitydb.ListRolesForUsersParams{
+			Scope: "acme", UserIDs: []string{"u1", "u2", "u3", "z9"},
+		})
+		must.NoError(t, listErr)
+		must.SliceLen(t, 3, rows)
+
+		test.Eq(t, "u1", rows[0].UserID)
+		test.Eq(t, "admin", rows[0].Role)
+		test.Eq(t, "u1", rows[1].UserID)
+		test.Eq(t, "member", rows[1].Role)
+		test.Eq(t, "u2", rows[2].UserID)
+		test.Eq(t, "member", rows[2].Role)
+
+		// One element is the case that expands to a single placeholder, which
+		// is also the shape a `?` would have had if nothing expanded at all —
+		// so it has to pick the right row rather than merely run.
+		one, oneErr := q.ListRolesForUsers(ctx, e.db, identitydb.ListRolesForUsersParams{
+			Scope: "acme", UserIDs: []string{"u2"},
+		})
+		must.NoError(t, oneErr)
+		must.SliceLen(t, 1, one)
+		test.Eq(t, "u2", one[0].UserID)
+
+		// The empty list is the defined answer: it matches nothing, on every
+		// dialect. `IN ()` is a syntax error on two of the three, so the
+		// expansion renders NULL; Postgres binds an empty array. Both mean the
+		// same thing, and neither is an error the caller has to guard against.
+		empty, emptyErr := q.ListRolesForUsers(ctx, e.db, identitydb.ListRolesForUsersParams{
+			Scope: "acme", UserIDs: []string{},
+		})
+		must.NoError(t, emptyErr)
+		test.SliceEmpty(t, empty)
+
+		// A nil slice is the same empty set, and it is what a caller who built
+		// the list from a filtered loop actually passes.
+		nilled, nilErr := q.ListRolesForUsers(ctx, e.db, identitydb.ListRolesForUsersParams{
+			Scope: "acme", UserIDs: nil,
+		})
+		must.NoError(t, nilErr)
+		test.SliceEmpty(t, nilled)
+	})
 }
 
 // newUser builds a user whose every string field is distinct, so that a

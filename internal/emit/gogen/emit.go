@@ -145,9 +145,55 @@ const prefixMarker = %q
 `, ir.PrefixMarker)
 	}
 
+	if hasSliceParams(pkg) {
+		imports.add("strings")
+
+		b.WriteString(slicePlaceholdersFunc)
+	}
+
 	b.WriteString(newFunc(pkg))
 
 	return header(pkg) + imports.render() + b.String(), nil
+}
+
+// slicePlaceholdersFunc is emitted when any query takes a list.
+//
+// It lives in the shared file rather than in the dialect files that call it
+// because whether the package has a list parameter is a fact about the shared
+// shapes — the params struct has a []T field on every dialect or the package
+// does not compile — so every invocation decides it identically and writes the
+// same bytes. Postgres emits it and never calls it, which costs nothing: an
+// unused function is not an error, and a helper that appeared or vanished
+// depending on which dialect ran last would break the one invariant this whole
+// design rests on.
+const slicePlaceholdersFunc = `// slicePlaceholders renders what one list parameter expands to: a placeholder
+// per element, comma-separated.
+//
+// An empty list renders NULL rather than nothing, because ` + "`IN ()`" + ` is a syntax
+// error on MySQL and SQLite both. ` + "`IN (NULL)`" + ` is the predicate that matches no
+// row, which is the same answer Postgres gives when an empty array is bound to
+// ` + "`= ANY`" + ` — so an empty list means the same thing on every dialect here.
+func slicePlaceholders(placeholder string, n int) string {
+	if n == 0 {
+		return "NULL"
+	}
+
+	return strings.TrimPrefix(strings.Repeat(","+placeholder, n), ",")
+}
+
+`
+
+// hasSliceParams reports whether any query in the package takes a list.
+func hasSliceParams(pkg *ir.Package) bool {
+	for i := range pkg.Queries {
+		for j := range pkg.Queries[i].Params {
+			if pkg.Queries[i].Params[j].Type.Slice {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // newFunc renders the constructor. Its signature depends on whether the
@@ -206,6 +252,10 @@ func emitQuerier(pkg *ir.Package) (string, error) {
 		b.WriteString(execRowsNote)
 	}
 
+	if hasSliceParams(pkg) {
+		b.WriteString(emptyListNote)
+	}
+
 	b.WriteString("type Querier interface {\n")
 
 	for i := range pkg.Queries {
@@ -250,6 +300,31 @@ const execRowsNote = `//
 // correct on two engines and wrong on the third. Either give it a predicate
 // that discriminates, or set clientFoundRows=true in the MySQL DSN, which
 // switches MySQL to matched semantics.
+`
+
+// emptyListNote is emitted above Querier when any query takes a list.
+//
+// It goes here for the same reason the :execrows note does: it is one fact about
+// three engines rather than a fact about any one method, and it is the part of
+// list binding the compiler cannot reach. The empty list itself converges —
+// every dialect matches nothing — and that is worth stating. Its negation does
+// not converge, and stating that is what keeps someone from discovering it in
+// production.
+const emptyListNote = `//
+// # A note on empty lists
+//
+// A list parameter that is empty matches nothing, on every dialect: Postgres
+// binds an empty array to ` + "`= ANY`" + `, and the other two expand to ` + "`IN (NULL)`" + ` because
+// ` + "`IN ()`" + ` is a syntax error there. Asking for the rows whose key is in an empty
+// set gets no rows back, which is what the empty set says, so a caller does not
+// have to guard the call.
+//
+// The negation is where they part company, and nothing below can warn you. An
+// empty list makes ` + "`NOT IN (NULL)`" + ` never true, so it matches nothing, while
+// Postgres's empty ` + "`<> ALL`" + ` is true and matches everything. Both readings are
+// defensible and no shared signature can say which was meant — so test
+// membership rather than its negation, and let the caller decide what an empty
+// set means before it calls.
 `
 
 // hasExecRows reports whether any query in the package returns a row count.

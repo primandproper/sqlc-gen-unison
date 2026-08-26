@@ -23,6 +23,14 @@ WHERE archived_at IS NULL
 	AND id = ?
 	AND scope = ?`
 
+const assignUserRoleMySQL = `INSERT INTO {{prefix}}identity_user_roles (
+	user_id,
+	role
+) VALUES (
+	?,
+	?
+)`
+
 const createAccountMySQL = `INSERT INTO {{prefix}}identity_accounts (
 	id,
 	scope,
@@ -308,6 +316,16 @@ WHERE {{prefix}}identity_invitations.created_at > COALESCE(?, (SELECT CURRENT_TI
 ORDER BY {{prefix}}identity_invitations.id ASC
 LIMIT ?`
 
+const listRolesForUsersMySQL = `SELECT
+	{{prefix}}identity_user_roles.user_id,
+	{{prefix}}identity_user_roles.role
+FROM {{prefix}}identity_user_roles
+	JOIN {{prefix}}identity_users ON {{prefix}}identity_users.id = {{prefix}}identity_user_roles.user_id
+WHERE {{prefix}}identity_users.archived_at IS NULL
+	AND {{prefix}}identity_users.scope = ?
+	AND {{prefix}}identity_user_roles.user_id IN (/*SLICE:user_ids*/?)
+ORDER BY {{prefix}}identity_user_roles.user_id ASC, {{prefix}}identity_user_roles.role ASC`
+
 const listUsersMySQL = `SELECT
 	{{prefix}}identity_users.id,
 	{{prefix}}identity_users.scope,
@@ -396,38 +414,42 @@ WHERE archived_at IS NULL
 
 // mysqlQueries answers every query in Querier against mysql.
 type mysqlQueries struct {
-	archiveAccount   string
-	archiveUser      string
-	createAccount    string
-	createInvitation string
-	createUser       string
-	getAccount       string
-	getInvitation    string
-	getUser          string
-	listAccounts     string
-	listInvitations  string
-	listUsers        string
-	updateAccount    string
-	updateUser       string
+	archiveAccount    string
+	archiveUser       string
+	assignUserRole    string
+	createAccount     string
+	createInvitation  string
+	createUser        string
+	getAccount        string
+	getInvitation     string
+	getUser           string
+	listAccounts      string
+	listInvitations   string
+	listRolesForUsers string
+	listUsers         string
+	updateAccount     string
+	updateUser        string
 }
 
 // newMySQL returns the mysql querier with prefix substituted into every
 // table name the analyzer identified.
 func newMySQL(prefix string) *mysqlQueries {
 	return &mysqlQueries{
-		archiveAccount:   strings.ReplaceAll(archiveAccountMySQL, prefixMarker, prefix),
-		archiveUser:      strings.ReplaceAll(archiveUserMySQL, prefixMarker, prefix),
-		createAccount:    strings.ReplaceAll(createAccountMySQL, prefixMarker, prefix),
-		createInvitation: strings.ReplaceAll(createInvitationMySQL, prefixMarker, prefix),
-		createUser:       strings.ReplaceAll(createUserMySQL, prefixMarker, prefix),
-		getAccount:       strings.ReplaceAll(getAccountMySQL, prefixMarker, prefix),
-		getInvitation:    strings.ReplaceAll(getInvitationMySQL, prefixMarker, prefix),
-		getUser:          strings.ReplaceAll(getUserMySQL, prefixMarker, prefix),
-		listAccounts:     strings.ReplaceAll(listAccountsMySQL, prefixMarker, prefix),
-		listInvitations:  strings.ReplaceAll(listInvitationsMySQL, prefixMarker, prefix),
-		listUsers:        strings.ReplaceAll(listUsersMySQL, prefixMarker, prefix),
-		updateAccount:    strings.ReplaceAll(updateAccountMySQL, prefixMarker, prefix),
-		updateUser:       strings.ReplaceAll(updateUserMySQL, prefixMarker, prefix),
+		archiveAccount:    strings.ReplaceAll(archiveAccountMySQL, prefixMarker, prefix),
+		archiveUser:       strings.ReplaceAll(archiveUserMySQL, prefixMarker, prefix),
+		assignUserRole:    strings.ReplaceAll(assignUserRoleMySQL, prefixMarker, prefix),
+		createAccount:     strings.ReplaceAll(createAccountMySQL, prefixMarker, prefix),
+		createInvitation:  strings.ReplaceAll(createInvitationMySQL, prefixMarker, prefix),
+		createUser:        strings.ReplaceAll(createUserMySQL, prefixMarker, prefix),
+		getAccount:        strings.ReplaceAll(getAccountMySQL, prefixMarker, prefix),
+		getInvitation:     strings.ReplaceAll(getInvitationMySQL, prefixMarker, prefix),
+		getUser:           strings.ReplaceAll(getUserMySQL, prefixMarker, prefix),
+		listAccounts:      strings.ReplaceAll(listAccountsMySQL, prefixMarker, prefix),
+		listInvitations:   strings.ReplaceAll(listInvitationsMySQL, prefixMarker, prefix),
+		listRolesForUsers: strings.ReplaceAll(listRolesForUsersMySQL, prefixMarker, prefix),
+		listUsers:         strings.ReplaceAll(listUsersMySQL, prefixMarker, prefix),
+		updateAccount:     strings.ReplaceAll(updateAccountMySQL, prefixMarker, prefix),
+		updateUser:        strings.ReplaceAll(updateUserMySQL, prefixMarker, prefix),
 	}
 }
 
@@ -455,6 +477,16 @@ func (q *mysqlQueries) ArchiveUser(ctx context.Context, db DBTX, arg ArchiveUser
 	}
 
 	return result.RowsAffected()
+}
+
+// AssignUserRole runs the :exec query against mysql.
+func (q *mysqlQueries) AssignUserRole(ctx context.Context, db DBTX, arg AssignUserRoleParams) error {
+	_, err := db.ExecContext(ctx, q.assignUserRole,
+		arg.UserID,
+		arg.Role,
+	)
+
+	return err
 }
 
 // CreateAccount runs the :exec query against mysql.
@@ -752,6 +784,49 @@ func (q *mysqlQueries) ListInvitations(ctx context.Context, db DBTX, arg ListInv
 	return items, nil
 }
 
+// ListRolesForUsers runs the :many query against mysql.
+func (q *mysqlQueries) ListRolesForUsers(ctx context.Context, db DBTX, arg ListRolesForUsersParams) ([]ListRolesForUsersRow, error) {
+	query := q.listRolesForUsers
+
+	args := make([]any, 0, 1+len(arg.UserIDs))
+
+	args = append(args, arg.Scope)
+
+	query = strings.Replace(query, "/*SLICE:user_ids*/?", slicePlaceholders("?", len(arg.UserIDs)), 1)
+
+	for _, v := range arg.UserIDs {
+		args = append(args, v)
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	var items []ListRolesForUsersRow
+
+	for rows.Next() {
+		var i ListRolesForUsersRow
+
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+
+		items = append(items, i)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
 // ListUsers runs the :many query against mysql.
 func (q *mysqlQueries) ListUsers(ctx context.Context, db DBTX, arg ListUsersParams) ([]ListUsersRow, error) {
 	rows, err := db.QueryContext(ctx, q.listUsers,
@@ -875,6 +950,10 @@ var (
 		ID    string
 		Scope string
 	}(ArchiveUserParams{})
+	_ = struct {
+		UserID string
+		Role   string
+	}(AssignUserRoleParams{})
 	_ = struct {
 		ID                          string
 		Scope                       string
@@ -1057,6 +1136,14 @@ var (
 		FilteredCount    int64
 		TotalCount       int64
 	}(ListInvitationsRow{})
+	_ = struct {
+		Scope   string
+		UserIDs []string
+	}(ListRolesForUsersParams{})
+	_ = struct {
+		UserID string
+		Role   string
+	}(ListRolesForUsersRow{})
 	_ = struct {
 		CreatedAfter    *time.Time
 		CreatedBefore   *time.Time

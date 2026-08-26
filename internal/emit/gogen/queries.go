@@ -204,33 +204,41 @@ func writeMethod(b *strings.Builder, pkg *ir.Package, receiver string, query *ir
 	fmt.Fprintf(b, "// %s runs the %s query against %s.\n", query.Name, query.Command, pkg.Dialect)
 	fmt.Fprintf(b, "func (q *%s) %s {\n", receiver, signature)
 
-	field := unexportedName(query.Name)
+	statementExpr := "q." + unexportedName(query.Name)
 	args := bindArgs(statement.Args)
+
+	if expands(statement) {
+		imports.add("strings")
+
+		b.WriteString(expansionPrelude(query, statement))
+
+		statementExpr, args = "query", ", args..."
+	}
 
 	switch query.Command {
 	case ir.CommandExec:
-		fmt.Fprintf(b, "\t_, err := db.ExecContext(ctx, q.%s%s)\n\n\treturn err\n", field, args)
+		fmt.Fprintf(b, "\t_, err := db.ExecContext(ctx, %s%s)\n\n\treturn err\n", statementExpr, args)
 	case ir.CommandExecRows:
-		fmt.Fprintf(b, `	result, err := db.ExecContext(ctx, q.%s%s)
+		fmt.Fprintf(b, `	result, err := db.ExecContext(ctx, %s%s)
 	if err != nil {
 		return 0, err
 	}
 
 	return result.RowsAffected()
-`, field, args)
+`, statementExpr, args)
 	case ir.CommandExecResult:
-		fmt.Fprintf(b, "\treturn db.ExecContext(ctx, q.%s%s)\n", field, args)
+		fmt.Fprintf(b, "\treturn db.ExecContext(ctx, %s%s)\n", statementExpr, args)
 	case ir.CommandOne:
-		fmt.Fprintf(b, `	row := db.QueryRowContext(ctx, q.%s%s)
+		fmt.Fprintf(b, `	row := db.QueryRowContext(ctx, %s%s)
 
 	var i %sRow
 
 	err := row.Scan(%s)
 
 	return i, err
-`, field, args, query.Name, scanTargets(query.Columns))
+`, statementExpr, args, query.Name, scanTargets(query.Columns))
 	case ir.CommandMany:
-		fmt.Fprintf(b, `	rows, err := db.QueryContext(ctx, q.%s%s)
+		fmt.Fprintf(b, `	rows, err := db.QueryContext(ctx, %s%s)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +262,7 @@ func writeMethod(b *strings.Builder, pkg *ir.Package, receiver string, query *ir
 	}
 
 	return items, nil
-`, field, args, query.Name, query.Name, scanTargets(query.Columns))
+`, statementExpr, args, query.Name, query.Name, scanTargets(query.Columns))
 	case ir.CommandInvalid:
 		return fmt.Errorf("query %s has no command", query.Name)
 	default:
@@ -266,6 +274,85 @@ func writeMethod(b *strings.Builder, pkg *ir.Package, receiver string, query *ir
 	return nil
 }
 
+// expands reports whether this dialect has to rewrite the statement before it
+// runs it.
+func expands(statement *ir.Statement) bool {
+	for i := range statement.Args {
+		if statement.Args[i].Expand != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// expansionPrelude renders the lines a method needs before it can run a
+// statement whose list parameter has no single placeholder.
+//
+// This is the one place generated code assembles anything at query time, and it
+// is worth being precise about what it is and is not. It is not dynamic SQL: the
+// statement is the analyzed one, the token being replaced was placed by the
+// analyzer, and what replaces it is a run of placeholders — never a value, never
+// an identifier. Everything the caller supplied is still bound. What the
+// generator could not know at generate time is only how many elements there
+// would be, and that is exactly what this computes.
+//
+// The arguments are appended in placeholder order, one statement per argument in
+// the order Args lists them, so an element of a list lands where the placeholder
+// that expanded for it sits. That correspondence is the whole point: it is the
+// hand-written []any that this tool exists to stop anyone from writing, and here
+// it is written from the same list the replacement is.
+func expansionPrelude(query *ir.Query, statement *ir.Statement) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "\tquery := q.%s\n\n", unexportedName(query.Name))
+	fmt.Fprintf(&b, "\targs := make([]any, 0, %s)\n\n", capacity(statement.Args))
+
+	for i := range statement.Args {
+		arg := &statement.Args[i]
+
+		field := "arg." + exportedName(arg.Name)
+
+		if arg.Expand == "" {
+			fmt.Fprintf(&b, "\targs = append(args, %s)\n\n", field)
+
+			continue
+		}
+
+		fmt.Fprintf(&b, "\tquery = strings.Replace(query, %q, slicePlaceholders(%q, len(%s)), 1)\n\n",
+			arg.Expand, arg.Placeholder, field)
+
+		fmt.Fprintf(&b, "\tfor _, v := range %s {\n\t\targs = append(args, v)\n\t}\n\n", field)
+	}
+
+	return b.String()
+}
+
+// capacity renders the exact length the argument slice will reach, so that the
+// one allocation is the only one.
+func capacity(args []ir.Arg) string {
+	var (
+		fixed int
+		terms []string
+	)
+
+	for i := range args {
+		if args[i].Expand == "" {
+			fixed++
+
+			continue
+		}
+
+		terms = append(terms, "len(arg."+exportedName(args[i].Name)+")")
+	}
+
+	if fixed > 0 || len(terms) == 0 {
+		terms = append([]string{fmt.Sprintf("%d", fixed)}, terms...)
+	}
+
+	return strings.Join(terms, "+")
+}
+
 // bindArgs renders the argument list a statement's placeholders bind, in
 // placeholder order.
 //
@@ -274,15 +361,15 @@ func writeMethod(b *strings.Builder, pkg *ir.Package, receiver string, query *ir
 // that repetition is exactly the []any that is written by hand today, in the
 // order of a column list a few lines up, and is correct on one engine and
 // silently wrong on the others.
-func bindArgs(args []string) string {
+func bindArgs(args []ir.Arg) string {
 	if len(args) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 
-	for _, arg := range args {
-		fmt.Fprintf(&b, ",\n\t\targ.%s", exportedName(arg))
+	for i := range args {
+		fmt.Fprintf(&b, ",\n\t\targ.%s", exportedName(args[i].Name))
 	}
 
 	return b.String() + ",\n\t"

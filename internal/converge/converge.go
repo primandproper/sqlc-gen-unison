@@ -96,6 +96,13 @@ func convergeQuery(logger *slog.Logger, query *pb.Query, opts *options.Options, 
 		text = markPrefixes(logger, name, text, tables)
 	}
 
+	// Checked against the marked text rather than the analyzer's, because the
+	// marked text is what the generated const holds and what the generated
+	// replacement will run against.
+	if err = checkExpansions(text, args); err != nil {
+		return ir.Query{}, ir.Statement{}, fmt.Errorf("unison: query %s: %w", name, err)
+	}
+
 	return ir.Query{
 		Name:    name,
 		Command: command,
@@ -124,32 +131,50 @@ func convergeQuery(logger *slog.Logger, query *pb.Query, opts *options.Options, 
 // of first appearance, and Args repeats a name as often as the engine repeats
 // its placeholder. That repetition is the hand-written []any this tool exists to
 // stop anyone from writing.
-func convergeParams(query *pb.Query, opts *options.Options, renames map[string]string) ([]ir.Field, []string, error) {
+func convergeParams(query *pb.Query, opts *options.Options, renames map[string]string) ([]ir.Field, []ir.Arg, error) {
 	var (
 		params []ir.Field
-		args   []string
+		args   []ir.Arg
 		seen   = make(map[string]ir.Type, len(query.GetParams()))
 	)
 
 	for _, param := range query.GetParams() {
 		column := param.GetColumn()
 
-		name := column.GetName()
-		if name == "" {
+		reported := column.GetName()
+		if reported == "" {
 			return nil, nil, fmt.Errorf(
 				"parameter %d has no name, so it cannot be converged onto a shared field. "+
 					"Name it with sqlc.arg() or sqlc.narg()", param.GetNumber())
 		}
 
-		if renamed, ok := renames[name]; ok {
+		name := reported
+		if renamed, ok := renames[reported]; ok {
 			name = renamed
 		}
 
 		table := column.GetTable().GetName()
 
-		fieldType, err := mapType(table, name, columnTypeName(column), column.GetNotNull(), opts.OverrideFor)
+		list, err := listOf(column)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parameter %q: %w", name, err)
+		}
+
+		fieldType, err := mapType(table, name, elementTypeName(column), column.GetNotNull(), opts.OverrideFor)
 		if err != nil {
 			return nil, nil, err
+		}
+
+		fieldType.Slice = list != notAList
+
+		if fieldType.Slice && fieldType.Nullable {
+			// A nullable list has two ways to be absent — a nil slice and a
+			// NULL — and no engine agrees about which the placeholder means.
+			// Name it with sqlc.arg() rather than sqlc.narg(); an empty list
+			// already matches nothing on all three.
+			return nil, nil, fmt.Errorf(
+				"parameter %q is a nullable list, which has no converged spelling. "+
+					"Bind it with sqlc.arg(); an empty list already matches nothing on every dialect", name)
 		}
 
 		if previous, ok := seen[name]; ok {
@@ -161,12 +186,26 @@ func convergeParams(query *pb.Query, opts *options.Options, renames map[string]s
 					"parameter %q appears more than once with different types (%s then %s)",
 					name, describe(previous), describe(fieldType))
 			}
+
+			if fieldType.Slice {
+				// One expansion site is replaced once, and sqlc marks each
+				// occurrence with the same token, so a list bound twice would
+				// expand the first and leave the second a single placeholder.
+				return nil, nil, fmt.Errorf(
+					"list parameter %q is bound more than once, and only the first would expand. "+
+						"Bind it once, or give each occurrence its own argument", name)
+			}
 		} else {
 			seen[name] = fieldType
 			params = append(params, ir.Field{Name: name, Type: fieldType})
 		}
 
-		args = append(args, name)
+		arg := ir.Arg{Name: name}
+		if list == expandedList {
+			arg.Expand, arg.Placeholder = sliceMarker(reported), slicePlaceholder
+		}
+
+		args = append(args, arg)
 	}
 
 	return params, args, nil
@@ -263,7 +302,11 @@ func describe(t ir.Type) string {
 	}
 
 	if t.Nullable {
-		return "nullable " + name
+		name = "nullable " + name
+	}
+
+	if t.Slice {
+		return "a list of " + name
 	}
 
 	return name
