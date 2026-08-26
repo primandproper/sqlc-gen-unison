@@ -21,6 +21,12 @@ type ArchiveUserParams struct {
 	Scope string
 }
 
+// AssignUserRoleParams are the arguments to AssignUserRole.
+type AssignUserRoleParams struct {
+	UserID string
+	Role   string
+}
+
 // CreateAccountParams are the arguments to CreateAccount.
 type CreateAccountParams struct {
 	ID                          string
@@ -227,6 +233,18 @@ type ListInvitationsRow struct {
 	ArchivedAt       *time.Time
 	FilteredCount    int64
 	TotalCount       int64
+}
+
+// ListRolesForUsersParams are the arguments to ListRolesForUsers.
+type ListRolesForUsersParams struct {
+	Scope   string
+	UserIDs []string
+}
+
+// ListRolesForUsersRow is one row of ListRolesForUsers's result.
+type ListRolesForUsersRow struct {
+	UserID string
+	Role   string
 }
 
 // ListUsersParams are the arguments to ListUsers.

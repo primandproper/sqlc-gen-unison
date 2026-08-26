@@ -394,3 +394,23 @@ WHERE identity_invitations.created_at > COALESCE(sqlc.narg(created_after), (SELE
 	AND identity_invitations.id > COALESCE(sqlc.narg(page_cursor), '')
 ORDER BY identity_invitations.id ASC
 LIMIT COALESCE(sqlc.narg(result_limit), 50);
+
+-- name: AssignUserRole :exec
+INSERT INTO identity_user_roles (
+	user_id,
+	role
+) VALUES (
+	sqlc.arg(user_id),
+	sqlc.arg(role)
+);
+
+-- name: ListRolesForUsers :many
+SELECT
+	identity_user_roles.user_id,
+	identity_user_roles.role
+FROM identity_user_roles
+	JOIN identity_users ON identity_users.id = identity_user_roles.user_id
+WHERE identity_users.archived_at IS NULL
+	AND identity_users.scope = sqlc.arg(scope)
+	AND identity_user_roles.user_id = ANY(sqlc.arg(user_ids)::TEXT[])
+ORDER BY identity_user_roles.user_id ASC, identity_user_roles.role ASC;

@@ -216,6 +216,113 @@ func TestReturningIsNotAConvergentShape(t *testing.T) {
 	test.StrContains(t, output, "CreateUser")
 }
 
+// TestListParamConvergesAcrossItsTwoSpellings is §7's last row, resolved.
+//
+// A variable-length IN list is the one shape where the *generated code* differs
+// by dialect rather than only the statement text: Postgres binds one array,
+// MySQL and SQLite have no array to bind and expand placeholders instead. The
+// corpus spells it both ways under one query name, and this is the assertion
+// that both arrive at the same method with the same []string parameter.
+//
+// It is a convergence and not a reconciliation: nothing pairs two queries or
+// merges two shapes. Each dialect emits the binding its own analysis described,
+// against a params struct all three computed identically — and the shared files
+// being byte-identical, which the test above checks, is the proof they did.
+func TestListParamConvergesAcrossItsTwoSpellings(t *testing.T) {
+	t.Parallel()
+
+	files := readAll(t, corpus{}.generate(t))
+
+	// One shared []string field, once, in the shared types.
+	test.StrContains(t, files["types_generated.go"], "UserIDs []string")
+
+	// One signature, and it says nothing about which dialect answers it.
+	test.StrContains(t, files["querier_generated.go"],
+		"ListRolesForUsers(ctx context.Context, db DBTX, arg ListRolesForUsersParams) ([]ListRolesForUsersRow, error)")
+
+	// Postgres binds the slice as it stands: one array parameter, no rewriting.
+	postgres := files["queries_postgresql_generated.go"]
+	test.StrContains(t, postgres, "q.listRolesForUsers,\n\t\targ.Scope,\n\t\targ.UserIDs,")
+	test.StrNotContains(t, postgres, "slicePlaceholders(")
+
+	// The other two expand, and the elements are appended after the scalar they
+	// follow in the statement rather than before it.
+	for _, dialect := range []string{"mysql", "sqlite"} {
+		expanding := files["queries_"+dialect+"_generated.go"]
+
+		test.StrContains(t, expanding, `strings.Replace(query, "/*SLICE:user_ids*/?", slicePlaceholders("?", len(arg.UserIDs)), 1)`)
+		test.StrContains(t, expanding, "args = append(args, arg.Scope)")
+	}
+}
+
+// TestRetypedListParamIsCompileError is the milestone-1 exit criterion applied
+// to lists: a parameter that is a list on two dialects and a scalar on the third
+// must not compile.
+//
+// This is the divergence that would otherwise be invisible. Exec and Query take
+// ...any, so binding a []string where the other dialects bind a string
+// type-checks at the call, and the statement that receives it merely returns the
+// wrong rows. The shape assertion in each dialect's file is what turns it into a
+// compile error naming the field.
+func TestRetypedListParamIsCompileError(t *testing.T) {
+	t.Parallel()
+
+	out, err := corpus{
+		mutate: func(dialect, sql string) string {
+			if dialect != "mysql" {
+				return sql
+			}
+
+			// The same argument, bound one at a time — which is exactly the
+			// hand-written escape hatch this feature exists to replace, left in
+			// place on one dialect after the others moved.
+			return strings.Replace(sql,
+				"identity_user_roles.user_id IN (sqlc.slice(user_ids))",
+				"identity_user_roles.user_id = sqlc.arg(user_ids)", 1)
+		},
+	}.generateExpectingFailure(t)
+
+	must.NoError(t, err, must.Sprint("the corpus should still generate; the divergence is meant to reach the compiler"))
+
+	output, compileErr := compilePackage(t, out)
+
+	must.Error(t, compileErr,
+		must.Sprintf("a list on two dialects and a scalar on the third compiled:\n%s", output))
+	test.StrContains(t, output, "UserIDs")
+}
+
+// TestListMustBindTheLastPlaceholder is the trap this feature would otherwise
+// have shipped, refused at generate time.
+//
+// Every placeholder an expansion produces is a bare `?`, which SQLite numbers as
+// one past the highest index it has seen — so a parameter that follows the list
+// collides with an element of it, matches nothing, and reports no error. There
+// is no way to emit code that is right on both expanding engines for that
+// ordering, so unison refuses it and says where to move the clause. The corpus
+// query already ends with its list; this puts it in front of the scope to prove
+// the refusal is real.
+func TestListMustBindTheLastPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	_, err := corpus{
+		mutate: func(dialect, sql string) string {
+			if dialect != "mysql" {
+				return sql
+			}
+
+			return strings.Replace(sql,
+				"\tAND identity_users.scope = sqlc.arg(scope)\n"+
+					"\tAND identity_user_roles.user_id IN (sqlc.slice(user_ids))\n",
+				"\tAND identity_user_roles.user_id IN (sqlc.slice(user_ids))\n"+
+					"\tAND identity_users.scope = sqlc.arg(scope)\n", 1)
+		},
+	}.generateExpectingFailure(t)
+
+	must.Error(t, err, must.Sprint("a list bound before another parameter generated, and SQLite would have silently matched nothing"))
+	test.StrContains(t, err.Error(), "user_ids")
+	test.StrContains(t, err.Error(), "ListRolesForUsers")
+}
+
 // dropQuery removes a named query and its statement from a query file.
 func dropQuery(sql, name string) string {
 	marker := "-- name: " + name + " "

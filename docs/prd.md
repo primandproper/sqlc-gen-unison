@@ -272,7 +272,11 @@ func (q *mysqlQueries) CreateUser(ctx context.Context, db DBTX, arg CreateUserPa
 ```
 
 **Settled:** `New` takes the emitted enum. The prefix is substituted into each
-statement once, here, at construction — nothing rewrites SQL at query time.
+statement once, here, at construction — nothing rewrites SQL at query time, with
+one bounded exception: a query taking a variable-length list has to know how
+many elements there are, so on the engines that expand placeholders the method
+replaces the analyzer's expansion site with a run of `?` before it binds. What
+is substituted is placeholders, never a value and never an identifier; see §7.
 
 ## 7. Shape-divergence policy
 
@@ -287,8 +291,9 @@ an authoring-side fix that converges the shape:
 | Reserved words differ (`cursor` in MySQL) | canonical argument names avoid the union of reserved words | sqlc, per dialect |
 | `CURRENT_TIMESTAMP` granularity | schema convention (`DATETIME(6)`) — a consumer schema concern | sqlc, against that schema |
 | rows-changed vs rows-matched | an emitted note above `Querier`; gate on a discriminating predicate, or set `clientFoundRows=true` in the MySQL DSN | `internal/emit/gogen` |
+| variable-length `IN` list | one `[]T` parameter — `= ANY(sqlc.arg(x)::T[])` on Postgres, `IN (sqlc.slice(x))` on the others — with the list binding the statement's **last** placeholder | `internal/converge/slices.go`, `TestListParamConvergesAcrossItsTwoSpellings` |
 
-Three of these rows moved during implementation, and how they moved is the
+Four of these rows moved during implementation, and how they moved is the
 policy working rather than bending:
 
 **`RETURNING` is refused outright.** The first draft imagined the MySQL query
@@ -313,6 +318,27 @@ anything. A genuine shape divergence still diverges and still fails to compile.
 `int64`, so the compiler cannot reach this one — which makes it the single
 divergence in the table that no mechanism here catches. It is emitted as a note
 above `Querier` so a reader meets it where the decision gets made.
+
+**The list row is the one divergence in generated code, and it still
+converges.** Every other row differs only in the *text* of a statement. A
+variable-length `IN` list differs in what the generated method has to do:
+Postgres binds the whole list as one array parameter, while MySQL and SQLite
+have no array to bind, so sqlc leaves an expansion site in the analyzed text and
+the generator turns it into one placeholder per element. Both still reach one
+shared `[]T` field, which is what makes this convergence rather than
+reconciliation — nothing pairs two queries, merges two shapes, or picks a
+winner. Each dialect emits the binding its own analysis described, against a
+params struct all three computed identically.
+
+Two facts about it are load-bearing. **An empty list matches nothing on every
+dialect** — Postgres binds an empty array, and the other two expand to
+`IN (NULL)` because `IN ()` is a syntax error there — so a caller does not guard
+the call; its negation does *not* converge, and an emitted note above `Querier`
+says so, since the compiler cannot reach it. And **the list must bind the last
+placeholder**, because SQLite numbers each bare `?` an expansion produces one
+past the highest index it has seen, so a parameter after the list collides with
+an element of it and silently matches nothing. That is refused at generate time,
+naming the query and where to move the clause.
 
 A query that genuinely cannot converge does not go through unison — it lives as
 a per-dialect hand-written statement under the consumer's existing container

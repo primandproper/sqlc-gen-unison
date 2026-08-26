@@ -91,6 +91,19 @@ tool refuses. Write creates as `:exec` and read back with a separate query. A
 `RETURNING` create on one dialect and not another is a divergence, and fails to
 compile like any other.
 
+**Spell a variable-length `IN` list each engine's own way, and put its clause
+last.** There is no shared spelling: Postgres binds one array —
+`WHERE id = ANY(sqlc.arg(ids)::TEXT[])` — while MySQL and SQLite take
+`WHERE id IN (sqlc.slice(ids))`. Under one query name they converge onto one
+`[]T` parameter, and each dialect's method binds it the way that engine needs:
+Postgres passes the slice through, the other two expand it to one placeholder
+per element before binding. An empty list matches nothing on all three, so a
+caller does not have to guard the call — but its negation does not converge, so
+test membership rather than `NOT IN`. The list has to bind the statement's last
+placeholder, because SQLite numbers each expanded `?` one past the highest index
+it has seen and would otherwise bind an element where the next parameter
+belongs; unison refuses that ordering at generate time rather than emitting it.
+
 **Render the per-dialect schema files from a single source.** Each invocation sees
 only its own dialect's catalog, so drift a query touches is caught — a missing
 column fails that dialect's analysis, a differently-typed one diverges the shape

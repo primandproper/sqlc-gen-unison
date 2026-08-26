@@ -12,7 +12,10 @@ import (
 var initialisms = map[string]string{
 	"acl": "ACL", "api": "API", "ascii": "ASCII", "cpu": "CPU", "css": "CSS",
 	"dns": "DNS", "eof": "EOF", "guid": "GUID", "html": "HTML", "http": "HTTP",
-	"https": "HTTPS", "id": "ID", "ip": "IP", "json": "JSON", "lhs": "LHS",
+	// The plural earns its place because list parameters make it common: a
+	// field bound against a set of keys is named for the plural, and UserIds
+	// beside UserID reads as a typo rather than a convention.
+	"https": "HTTPS", "id": "ID", "ids": "IDs", "ip": "IP", "json": "JSON", "lhs": "LHS",
 	"qps": "QPS", "ram": "RAM", "rhs": "RHS", "rpc": "RPC", "sla": "SLA",
 	"smtp": "SMTP", "sql": "SQL", "ssh": "SSH", "tcp": "TCP", "tls": "TLS",
 	"ttl": "TTL", "udp": "UDP", "ui": "UI", "uid": "UID", "uuid": "UUID",

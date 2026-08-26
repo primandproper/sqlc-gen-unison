@@ -38,6 +38,16 @@ resolved as "do not use `RETURNING`"** — creates are `:exec` plus a separate r
 Bridging it would mean pairing two queries by convention and emitting two round trips, which is
 reconciliation. `TestReturningIsNotAConvergentShape` pins that.
 
+**The variable-length `IN` list is the one row where generated *code* diverges, and it still
+converges.** Postgres binds the list as one array (`= ANY(sqlc.arg(x)::T[])`); MySQL and SQLite have
+no array, so sqlc leaves a `/*SLICE:name*/?` expansion site in the analyzed text and the emitted
+method replaces it with one placeholder per element before binding. Both reach one shared `[]T`
+field, so nothing is paired, merged, or promoted. `internal/converge/slices.go` decides it. Two
+rules go with it: an **empty list matches nothing on every dialect** (`IN (NULL)` on the expanding
+two, an empty array on Postgres) — but its *negation* does not, which is why an emitted note above
+`Querier` says so — and **the list must bind the last placeholder**, refused at generate time for
+the reason two sections down.
+
 ## Two modes, one binary
 
 - **Plugin mode** — the no-args root behavior. sqlc writes a `CodeGenRequest` protobuf to stdin and
@@ -48,6 +58,13 @@ reconciliation. `TestReturningIsNotAConvergentShape` pins that.
 
 ## Things that will cost you a day if you rediscover them
 
+- **SQLite numbers a bare `?` one past the highest index it has seen.** sqlc spells SQLite's
+  ordinary parameters `?1`, `?2`, but an expanded `sqlc.slice()` is bare `?`s — so a parameter
+  *after* the list collides with an element of it. `WHERE id IN (?,?) AND scope = ?2` binds the
+  second id where scope belongs, returns no rows, and reports no error. That is why
+  `checkExpansions` requires a list to bind the statement's last placeholder, and why the corpus
+  puts the `IN` clause at the end. MySQL, whose placeholders are all positional, is unharmed either
+  way — which is exactly what makes it invisible if you only test there.
 - **`Parameter.Number` is not placeholder order.** On MySQL the bare `?` that LIMIT requires is
   numbered 1 while appearing last in the text. Read parameters in **list order**; sqlc's own Go
   generator does. Sorting by `Number` transposes arguments silently.

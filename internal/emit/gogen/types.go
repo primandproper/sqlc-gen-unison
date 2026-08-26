@@ -11,6 +11,23 @@ import (
 
 // goType renders an IR type as Go source, recording any import it needs.
 func goType(t ir.Type, nullAs string, imports *importSet) (string, error) {
+	// A list is one field holding many values, and the nullable question does
+	// not arise: a nil slice and an empty one both match nothing, on every
+	// dialect. So the slice wraps the element type and nothing else changes —
+	// which is what makes the shared field the same []T whether the dialect
+	// underneath binds an array or expands placeholders.
+	if t.Slice {
+		element := t
+		element.Slice = false
+
+		rendered, err := goType(element, nullAs, imports)
+		if err != nil {
+			return "", err
+		}
+
+		return "[]" + rendered, nil
+	}
+
 	if t.Override != "" {
 		return renderOverride(t.Override, imports)
 	}

@@ -65,6 +65,18 @@ type Type struct {
 
 	// Nullable reports that the analyzer could not rule out NULL.
 	Nullable bool
+
+	// Slice reports that the field holds a list of Kind rather than one of it,
+	// bound against a set the statement tests membership in.
+	//
+	// It is the one shape whose *generated code* differs by dialect rather than
+	// only its text: Postgres binds the list as one array parameter, and the
+	// other two engines have no array to bind, so their statements carry an
+	// expansion site that becomes one placeholder per element at query time.
+	// Which of the two a dialect does is recorded on Arg, not here — this half
+	// is the shared shape, and the shared shape is a single []T field either
+	// way.
+	Slice bool
 }
 
 // Field is one named, typed member of a params or row shape.
@@ -161,7 +173,28 @@ type Statement struct {
 
 	// Args names the parameter each placeholder binds, in placeholder order.
 	// Names repeat when the engine repeats a placeholder.
-	Args []string
+	Args []Arg
+}
+
+// Arg is one placeholder's binding: which parameter it takes its value from,
+// and how.
+type Arg struct {
+	// Name is the shared parameter this placeholder binds.
+	Name string
+
+	// Expand, when set, is the literal text in SQL that stands where this
+	// dialect needs one placeholder per element of Name's list. It is replaced
+	// at query time — by generated, compiled code — with Placeholder repeated
+	// once per element, and every element is bound in this position.
+	//
+	// Empty is the ordinary case, and it is also what Postgres uses for a list:
+	// there the whole slice is one bound array, so there is nothing to expand.
+	Expand string
+
+	// Placeholder is one element's placeholder, meaningful only when Expand is
+	// set. It is spelled here rather than assumed by the emitter, which knows
+	// nothing about which engines number their placeholders.
+	Placeholder string
 }
 
 // Package is everything an emitter needs for one invocation.

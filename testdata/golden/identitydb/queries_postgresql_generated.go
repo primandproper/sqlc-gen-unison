@@ -23,6 +23,14 @@ WHERE archived_at IS NULL
 	AND id = $1
 	AND scope = $2`
 
+const assignUserRolePostgreSQL = `INSERT INTO {{prefix}}identity_user_roles (
+	user_id,
+	role
+) VALUES (
+	$1,
+	$2
+)`
+
 const createAccountPostgreSQL = `INSERT INTO {{prefix}}identity_accounts (
 	id,
 	scope,
@@ -308,6 +316,16 @@ WHERE {{prefix}}identity_invitations.created_at > COALESCE($1, (SELECT CURRENT_T
 ORDER BY {{prefix}}identity_invitations.id ASC
 LIMIT COALESCE($8, 50)`
 
+const listRolesForUsersPostgreSQL = `SELECT
+	{{prefix}}identity_user_roles.user_id,
+	{{prefix}}identity_user_roles.role
+FROM {{prefix}}identity_user_roles
+	JOIN {{prefix}}identity_users ON {{prefix}}identity_users.id = {{prefix}}identity_user_roles.user_id
+WHERE {{prefix}}identity_users.archived_at IS NULL
+	AND {{prefix}}identity_users.scope = $1
+	AND {{prefix}}identity_user_roles.user_id = ANY($2::TEXT[])
+ORDER BY {{prefix}}identity_user_roles.user_id ASC, {{prefix}}identity_user_roles.role ASC`
+
 const listUsersPostgreSQL = `SELECT
 	{{prefix}}identity_users.id,
 	{{prefix}}identity_users.scope,
@@ -396,38 +414,42 @@ WHERE archived_at IS NULL
 
 // postgresqlQueries answers every query in Querier against postgresql.
 type postgresqlQueries struct {
-	archiveAccount   string
-	archiveUser      string
-	createAccount    string
-	createInvitation string
-	createUser       string
-	getAccount       string
-	getInvitation    string
-	getUser          string
-	listAccounts     string
-	listInvitations  string
-	listUsers        string
-	updateAccount    string
-	updateUser       string
+	archiveAccount    string
+	archiveUser       string
+	assignUserRole    string
+	createAccount     string
+	createInvitation  string
+	createUser        string
+	getAccount        string
+	getInvitation     string
+	getUser           string
+	listAccounts      string
+	listInvitations   string
+	listRolesForUsers string
+	listUsers         string
+	updateAccount     string
+	updateUser        string
 }
 
 // newPostgreSQL returns the postgresql querier with prefix substituted into every
 // table name the analyzer identified.
 func newPostgreSQL(prefix string) *postgresqlQueries {
 	return &postgresqlQueries{
-		archiveAccount:   strings.ReplaceAll(archiveAccountPostgreSQL, prefixMarker, prefix),
-		archiveUser:      strings.ReplaceAll(archiveUserPostgreSQL, prefixMarker, prefix),
-		createAccount:    strings.ReplaceAll(createAccountPostgreSQL, prefixMarker, prefix),
-		createInvitation: strings.ReplaceAll(createInvitationPostgreSQL, prefixMarker, prefix),
-		createUser:       strings.ReplaceAll(createUserPostgreSQL, prefixMarker, prefix),
-		getAccount:       strings.ReplaceAll(getAccountPostgreSQL, prefixMarker, prefix),
-		getInvitation:    strings.ReplaceAll(getInvitationPostgreSQL, prefixMarker, prefix),
-		getUser:          strings.ReplaceAll(getUserPostgreSQL, prefixMarker, prefix),
-		listAccounts:     strings.ReplaceAll(listAccountsPostgreSQL, prefixMarker, prefix),
-		listInvitations:  strings.ReplaceAll(listInvitationsPostgreSQL, prefixMarker, prefix),
-		listUsers:        strings.ReplaceAll(listUsersPostgreSQL, prefixMarker, prefix),
-		updateAccount:    strings.ReplaceAll(updateAccountPostgreSQL, prefixMarker, prefix),
-		updateUser:       strings.ReplaceAll(updateUserPostgreSQL, prefixMarker, prefix),
+		archiveAccount:    strings.ReplaceAll(archiveAccountPostgreSQL, prefixMarker, prefix),
+		archiveUser:       strings.ReplaceAll(archiveUserPostgreSQL, prefixMarker, prefix),
+		assignUserRole:    strings.ReplaceAll(assignUserRolePostgreSQL, prefixMarker, prefix),
+		createAccount:     strings.ReplaceAll(createAccountPostgreSQL, prefixMarker, prefix),
+		createInvitation:  strings.ReplaceAll(createInvitationPostgreSQL, prefixMarker, prefix),
+		createUser:        strings.ReplaceAll(createUserPostgreSQL, prefixMarker, prefix),
+		getAccount:        strings.ReplaceAll(getAccountPostgreSQL, prefixMarker, prefix),
+		getInvitation:     strings.ReplaceAll(getInvitationPostgreSQL, prefixMarker, prefix),
+		getUser:           strings.ReplaceAll(getUserPostgreSQL, prefixMarker, prefix),
+		listAccounts:      strings.ReplaceAll(listAccountsPostgreSQL, prefixMarker, prefix),
+		listInvitations:   strings.ReplaceAll(listInvitationsPostgreSQL, prefixMarker, prefix),
+		listRolesForUsers: strings.ReplaceAll(listRolesForUsersPostgreSQL, prefixMarker, prefix),
+		listUsers:         strings.ReplaceAll(listUsersPostgreSQL, prefixMarker, prefix),
+		updateAccount:     strings.ReplaceAll(updateAccountPostgreSQL, prefixMarker, prefix),
+		updateUser:        strings.ReplaceAll(updateUserPostgreSQL, prefixMarker, prefix),
 	}
 }
 
@@ -455,6 +477,16 @@ func (q *postgresqlQueries) ArchiveUser(ctx context.Context, db DBTX, arg Archiv
 	}
 
 	return result.RowsAffected()
+}
+
+// AssignUserRole runs the :exec query against postgresql.
+func (q *postgresqlQueries) AssignUserRole(ctx context.Context, db DBTX, arg AssignUserRoleParams) error {
+	_, err := db.ExecContext(ctx, q.assignUserRole,
+		arg.UserID,
+		arg.Role,
+	)
+
+	return err
 }
 
 // CreateAccount runs the :exec query against postgresql.
@@ -736,6 +768,40 @@ func (q *postgresqlQueries) ListInvitations(ctx context.Context, db DBTX, arg Li
 	return items, nil
 }
 
+// ListRolesForUsers runs the :many query against postgresql.
+func (q *postgresqlQueries) ListRolesForUsers(ctx context.Context, db DBTX, arg ListRolesForUsersParams) ([]ListRolesForUsersRow, error) {
+	rows, err := db.QueryContext(ctx, q.listRolesForUsers,
+		arg.Scope,
+		arg.UserIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	var items []ListRolesForUsersRow
+
+	for rows.Next() {
+		var i ListRolesForUsersRow
+
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+
+		items = append(items, i)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
 // ListUsers runs the :many query against postgresql.
 func (q *postgresqlQueries) ListUsers(ctx context.Context, db DBTX, arg ListUsersParams) ([]ListUsersRow, error) {
 	rows, err := db.QueryContext(ctx, q.listUsers,
@@ -851,6 +917,10 @@ var (
 		ID    string
 		Scope string
 	}(ArchiveUserParams{})
+	_ = struct {
+		UserID string
+		Role   string
+	}(AssignUserRoleParams{})
 	_ = struct {
 		ID                          string
 		Scope                       string
@@ -1033,6 +1103,14 @@ var (
 		FilteredCount    int64
 		TotalCount       int64
 	}(ListInvitationsRow{})
+	_ = struct {
+		Scope   string
+		UserIDs []string
+	}(ListRolesForUsersParams{})
+	_ = struct {
+		UserID string
+		Role   string
+	}(ListRolesForUsersRow{})
 	_ = struct {
 		CreatedAfter    *time.Time
 		CreatedBefore   *time.Time
