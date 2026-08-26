@@ -195,17 +195,17 @@ from a **single source** — as platform-go does via `migrations.SQL(dialect,
 Every invocation receives, via options, the **full dialect roster**, not just
 its own dialect. The emitted output splits into:
 
-- **Shared files** — `types.go` (params and row structs), `querier.go` (the
+- **Shared files** — `types_generated.go` (params and row structs), `querier_generated.go` (the
   interface and the `New(...)` constructor that switches over the roster),
-  `db.go` (DBTX, prefix plumbing). These are a **pure function of (roster,
+  `db_generated.go` (DBTX, prefix plumbing). These are a **pure function of (roster,
   query shapes, options)**: deterministically ordered, no dialect-specific
   strings, no timestamps. Because every invocation computes them from the same
   roster and — when the dialects agree — the same shapes, **all N invocations
   write byte-identical shared files to the same paths.** The overwrites are
   idempotent. We deliberately eat the redundant emission; it costs
   microseconds and removes an entire merge/promote/hash subsystem.
-- **Per-dialect files** — `queries_postgres.go`, `queries_mysql.go`,
-  `queries_sqlite.go`: SQL constants, argument marshaling in that dialect's
+- **Per-dialect files** — `queries_postgresql_generated.go`, `queries_mysql_generated.go`,
+  `queries_sqlite_generated.go`: SQL constants, argument marshaling in that dialect's
   order, and that dialect's implementation of the querier interface. All
   compile unconditionally; a consumer instantiates one.
 
@@ -213,7 +213,7 @@ its own dialect. The emitted output splits into:
 
 If dialect B's analysis disagrees with dialect A's — a missing query, an extra
 param, a different projection — then B's run overwrites the shared files with
-*its* shape, and A's `queries_postgres.go` now references a field or method the
+*its* shape, and A's `queries_postgresql_generated.go` now references a field or method the
 shared files don't declare. **The Go compiler reports the divergence**, in
 generated code, naming the symbol. Last-write-wins is acceptable precisely
 because the per-dialect files pin their expectations by name.
@@ -227,7 +227,7 @@ container tests exist for, and a `unison verify` mode (re-run generation,
 ### Sketch of the output
 
 ```go
-// types.go (shared, emitted identically by every dialect's run)
+// types_generated.go (shared, emitted identically by every dialect's run)
 type CreateUserParams struct {
     ID           string
     Scope        tenancy.Scope
@@ -235,14 +235,14 @@ type CreateUserParams struct {
     EmailAddress string
 }
 
-// querier.go (shared)
+// querier_generated.go (shared)
 type Querier interface {
     CreateUser(ctx context.Context, db DBTX, arg CreateUserParams) error
     GetUser(ctx context.Context, db DBTX, arg GetUserParams) (GetUserRow, error)
     // ...
 }
 
-// db.go (shared) — the dialect is an emitted enum, not a string, so naming one
+// db_generated.go (shared) — the dialect is an emitted enum, not a string, so naming one
 // that was not generated is a compile error rather than an error value at
 // startup. Dialects() lists the roster in a stable order.
 type Dialect string
@@ -263,7 +263,7 @@ func New(dialect Dialect, prefix string) (Querier, error) {
     }
 }
 
-// queries_mysql.go (per-dialect)
+// queries_mysql_generated.go (per-dialect)
 const createUserMySQL = "INSERT INTO {{prefix}}identity_users (...) VALUES (?, ?, ?, ?)"
 
 func (q *mysqlQueries) CreateUser(ctx context.Context, db DBTX, arg CreateUserParams) error {

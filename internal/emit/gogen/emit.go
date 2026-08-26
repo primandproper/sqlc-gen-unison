@@ -40,9 +40,9 @@ func Emit(pkg *ir.Package) ([]File, error) {
 		fn   func(*ir.Package) (string, error)
 		name string
 	}{
-		{name: "db.go", fn: emitDB},
-		{name: "types.go", fn: emitTypes},
-		{name: "querier.go", fn: emitQuerier},
+		{name: "db_generated.go", fn: emitDB},
+		{name: "types_generated.go", fn: emitTypes},
+		{name: "querier_generated.go", fn: emitQuerier},
 		{name: queriesFilename(pkg.Dialect), fn: emitQueries},
 	} {
 		source, err := emit.fn(pkg)
@@ -64,8 +64,11 @@ func Emit(pkg *ir.Package) ([]File, error) {
 }
 
 // queriesFilename names a dialect's query file.
+//
+// Every emitted filename carries a _generated suffix, so a directory listing
+// says what the DO NOT EDIT banner says without the file being opened.
 func queriesFilename(dialect string) string {
-	return "queries_" + strings.ToLower(dialect) + ".go"
+	return "queries_" + strings.ToLower(dialect) + "_generated.go"
 }
 
 // header is the generated-file banner.
@@ -84,7 +87,7 @@ package %s
 `, pkg.SQLCVersion, pkg.UnisonVersion, pkg.Name)
 }
 
-// emitDB renders db.go: the executor interface, the dialect enum, and the
+// emitDB renders db_generated.go: the executor interface, the dialect enum, and the
 // constructor that switches over the roster.
 func emitDB(pkg *ir.Package) (string, error) {
 	imports := newImportSet()
@@ -183,7 +186,7 @@ func newFunc(pkg *ir.Package) string {
 	return b.String()
 }
 
-// emitQuerier renders querier.go: the interface every dialect implements.
+// emitQuerier renders querier_generated.go: the interface every dialect implements.
 func emitQuerier(pkg *ir.Package) (string, error) {
 	imports := newImportSet()
 
@@ -260,7 +263,7 @@ func hasExecRows(pkg *ir.Package) bool {
 	return false
 }
 
-// emitTypes renders types.go: the params and row structs.
+// emitTypes renders types_generated.go: the params and row structs.
 func emitTypes(pkg *ir.Package) (string, error) {
 	imports := newImportSet()
 

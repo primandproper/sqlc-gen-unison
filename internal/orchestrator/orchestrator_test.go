@@ -57,8 +57,8 @@ func TestGenerate(t *testing.T) {
 	out := filepath.Join(project, "identitydb")
 
 	for _, name := range []string{
-		"db.go", "types.go", "querier.go",
-		"queries_mysql.go", "queries_postgresql.go", "queries_sqlite.go",
+		"db_generated.go", "types_generated.go", "querier_generated.go",
+		"queries_mysql_generated.go", "queries_postgresql_generated.go", "queries_sqlite_generated.go",
 	} {
 		_, err := os.Stat(filepath.Join(out, name))
 		test.NoError(t, err, test.Sprintf("%s was not written", name))

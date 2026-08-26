@@ -74,7 +74,7 @@ func TestEmitEveryCommand(t *testing.T) {
 
 	files := emitted(t, fixture(options.NullPointer, "postgresql"))
 
-	querier := collapse(files["querier.go"])
+	querier := collapse(files["querier_generated.go"])
 
 	test.StrContains(t, querier, "InsertThing(ctx context.Context, db DBTX, arg InsertThingParams) error")
 	test.StrContains(t, querier, "GetThing(ctx context.Context, db DBTX, arg GetThingParams) (GetThingRow, error)")
@@ -87,7 +87,7 @@ func TestEmitEveryCommand(t *testing.T) {
 	test.StrContains(t, querier, `"database/sql"`)
 
 	// A query with no parameters takes no arg struct rather than an empty one.
-	test.StrNotContains(t, collapse(files["types.go"]), "ListThingsParams")
+	test.StrNotContains(t, collapse(files["types_generated.go"]), "ListThingsParams")
 
 	// The :execrows note is emitted because this package has one.
 	test.StrContains(t, querier, "A note on the :execrows count")
@@ -97,7 +97,7 @@ func TestEmitEveryCommand(t *testing.T) {
 func TestEmitNullPointer(t *testing.T) {
 	t.Parallel()
 
-	types := collapse(emitted(t, fixture(options.NullPointer, "postgresql"))["types.go"])
+	types := collapse(emitted(t, fixture(options.NullPointer, "postgresql"))["types_generated.go"])
 
 	test.StrContains(t, types, "Nickname *string")
 	test.StrContains(t, types, "SeenAt *time.Time")
@@ -115,7 +115,7 @@ func TestEmitNullSQL(t *testing.T) {
 	t.Parallel()
 
 	files := emitted(t, fixture(options.NullSQL, "postgresql"))
-	types := collapse(files["types.go"])
+	types := collapse(files["types_generated.go"])
 
 	test.StrContains(t, types, "Nickname sql.NullString")
 	test.StrContains(t, types, "SeenAt sql.NullTime")
@@ -146,7 +146,7 @@ func TestEmittedFixtureCompiles(t *testing.T) {
 
 			// Every dialect in the roster, into one directory — which is what a
 			// real run does, and what the shared files are written to assume.
-			// One dialect's output alone deliberately does not compile: db.go
+			// One dialect's output alone deliberately does not compile: db_generated.go
 			// names a constructor per dialect.
 			for _, dialect := range fixture(style, "").Roster {
 				for name, contents := range emitted(t, fixture(style, dialect)) {

@@ -23,8 +23,8 @@ func TestCorpusConverges(t *testing.T) {
 
 	// One shared set plus one file per dialect.
 	for _, name := range []string{
-		"db.go", "types.go", "querier.go",
-		"queries_mysql.go", "queries_postgresql.go", "queries_sqlite.go",
+		"db_generated.go", "types_generated.go", "querier_generated.go",
+		"queries_mysql_generated.go", "queries_postgresql_generated.go", "queries_sqlite_generated.go",
 	} {
 		test.MapContainsKey(t, files, name)
 	}
@@ -53,7 +53,7 @@ func TestSharedFilesAreByteIdenticalAcrossDialects(t *testing.T) {
 
 	reference := dialects[0]
 
-	for _, name := range []string{"db.go", "types.go", "querier.go"} {
+	for _, name := range []string{"db_generated.go", "types_generated.go", "querier_generated.go"} {
 		for _, dialect := range dialects[1:] {
 			must.Eq(t, shared[reference][name], shared[dialect][name],
 				must.Sprintf("%s differs between %s and %s, so the dialects do not converge",

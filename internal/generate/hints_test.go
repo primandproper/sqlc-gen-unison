@@ -60,7 +60,7 @@ func TestNullAsSQLConvergesAndCompiles(t *testing.T) {
 	out := corpus{options: corpusOptions + "          null_as: sql\n"}.generate(t)
 	files := readAll(t, out)
 
-	types := files["types.go"]
+	types := files["types_generated.go"]
 
 	test.StrContains(t, types, "sql.NullTime")
 	test.StrContains(t, types, "sql.NullString")
@@ -88,7 +88,7 @@ func TestHintsMakeSQLiteConverge(t *testing.T) {
 	sqlite := readAll(t, corpus{dialects: []string{"sqlite"}}.generate(t))
 	postgres := readAll(t, corpus{dialects: []string{"postgresql"}}.generate(t))
 
-	for _, name := range []string{"types.go", "querier.go", "db.go"} {
+	for _, name := range []string{"types_generated.go", "querier_generated.go", "db_generated.go"} {
 		must.Eq(t, postgres[name], sqlite[name],
 			must.Sprintf("%s differs between sqlite and postgresql", name))
 	}

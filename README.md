@@ -104,10 +104,10 @@ Into one directory, from N runs:
 
 | file | written by | contents |
 | --- | --- | --- |
-| `db.go` | every dialect | `DBTX`, the `Dialect` enum, `New` |
-| `types.go` | every dialect | one params and one row struct per query |
-| `querier.go` | every dialect | the `Querier` interface |
-| `queries_<dialect>.go` | that dialect | its SQL, its argument order, its methods |
+| `db_generated.go` | every dialect | `DBTX`, the `Dialect` enum, `New` |
+| `types_generated.go` | every dialect | one params and one row struct per query |
+| `querier_generated.go` | every dialect | the `Querier` interface |
+| `queries_<dialect>_generated.go` | that dialect | its SQL, its argument order, its methods |
 
 ```go
 q, err := identitydb.New(identitydb.DialectPostgreSQL, "tenant_")
