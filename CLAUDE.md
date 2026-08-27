@@ -114,7 +114,7 @@ the reason two sections down.
 
 ## Layout
 
-- `cmd/main/main.go` — thin entrypoint: signal-cancellable context → `cli.Execute`.
+- `cmd/unison/main.go` — thin entrypoint: signal-cancellable context → `cli.Execute`.
 - `internal/cli/` — cobra root command and subcommands. Owns the plugin-mode/stdout rule.
   `internal/cli/pluginenv` names the one environment variable, shared with the orchestrator.
 - `internal/protocol/` — the sqlc plugin wire format, and nowhere else. Decides plugin mode.

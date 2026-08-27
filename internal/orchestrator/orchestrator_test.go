@@ -279,7 +279,7 @@ func buildUnison(t *testing.T) string {
 
 		builtBinary = filepath.Join(dir, "unison")
 
-		cmd := exec.CommandContext(context.Background(), "go", "build", "-o", builtBinary, "../../cmd/main")
+		cmd := exec.CommandContext(context.Background(), "go", "build", "-o", builtBinary, "../../cmd/unison")
 		if output, outputErr := cmd.CombinedOutput(); outputErr != nil {
 			errBuild = fmt.Errorf("building the CLI: %w: %s", outputErr, output)
 		}

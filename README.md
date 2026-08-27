@@ -160,9 +160,9 @@ order. SQLite needs no Docker and always runs.
 ## Layout
 
 ```
-cmd/main/             # entrypoint: signal-cancellable context -> cli.Execute
+cmd/unison/           # entrypoint: signal-cancellable context -> cli.Execute
 internal/cli/         # cobra root command and subcommands
-version/              # build metadata, injected via -ldflags by scripts/build.sh
+version/              # build metadata: -ldflags from scripts/build.sh, else the module version
 scripts/              # build/format/lint/test/shellcheck helpers
 .github/workflows/    # CI mirroring the make targets
 ```

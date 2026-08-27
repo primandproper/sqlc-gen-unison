@@ -28,7 +28,7 @@ if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
 fi
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CMD_PACKAGE="github.com/primandproper/sqlc-gen-unison/cmd/main"
+CMD_PACKAGE="github.com/primandproper/sqlc-gen-unison/cmd/unison"
 BINARY_NAME="unison"
 
 # The platforms consumers and their CI actually run. Pure Go, so CGO is off and
