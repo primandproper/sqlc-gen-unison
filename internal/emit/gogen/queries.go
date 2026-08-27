@@ -47,6 +47,8 @@ type %s struct {
 
 	writeConstructor(&b, pkg, receiver)
 
+	writeTimeHelpers(&b, pkg, imports)
+
 	for i := range pkg.Queries {
 		query := &pkg.Queries[i]
 
@@ -204,13 +206,15 @@ func writeMethod(b *strings.Builder, pkg *ir.Package, receiver string, query *ir
 	fmt.Fprintf(b, "// %s runs the %s query against %s.\n", query.Name, query.Command, pkg.Dialect)
 	fmt.Fprintf(b, "func (q *%s) %s {\n", receiver, signature)
 
+	binders := timeBinders(pkg, query)
+
 	statementExpr := "q." + unexportedName(query.Name)
-	args := bindArgs(statement.Args)
+	args := bindArgs(statement.Args, binders)
 
 	if expands(statement) {
 		imports.add("strings")
 
-		b.WriteString(expansionPrelude(query, statement))
+		b.WriteString(expansionPrelude(query, statement, binders))
 
 		statementExpr, args = "query", ", args..."
 	}
@@ -302,7 +306,7 @@ func expands(statement *ir.Statement) bool {
 // that expanded for it sits. That correspondence is the whole point: it is the
 // hand-written []any that this tool exists to stop anyone from writing, and here
 // it is written from the same list the replacement is.
-func expansionPrelude(query *ir.Query, statement *ir.Statement) string {
+func expansionPrelude(query *ir.Query, statement *ir.Statement, binders map[string]timeBinder) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "\tquery := q.%s\n\n", unexportedName(query.Name))
@@ -314,7 +318,7 @@ func expansionPrelude(query *ir.Query, statement *ir.Statement) string {
 		field := "arg." + exportedName(arg.Name)
 
 		if arg.Expand == "" {
-			fmt.Fprintf(&b, "\targs = append(args, %s)\n\n", field)
+			fmt.Fprintf(&b, "\targs = append(args, %s)\n\n", bindValue(field, binders[arg.Name]))
 
 			continue
 		}
@@ -322,7 +326,8 @@ func expansionPrelude(query *ir.Query, statement *ir.Statement) string {
 		fmt.Fprintf(&b, "\tquery = strings.Replace(query, %q, slicePlaceholders(%q, len(%s)), 1)\n\n",
 			arg.Expand, arg.Placeholder, field)
 
-		fmt.Fprintf(&b, "\tfor _, v := range %s {\n\t\targs = append(args, v)\n\t}\n\n", field)
+		fmt.Fprintf(&b, "\tfor _, v := range %s {\n\t\targs = append(args, %s)\n\t}\n\n",
+			field, bindElement("v", binders[arg.Name]))
 	}
 
 	return b.String()
@@ -361,7 +366,7 @@ func capacity(args []ir.Arg) string {
 // that repetition is exactly the []any that is written by hand today, in the
 // order of a column list a few lines up, and is correct on one engine and
 // silently wrong on the others.
-func bindArgs(args []ir.Arg) string {
+func bindArgs(args []ir.Arg, binders map[string]timeBinder) string {
 	if len(args) == 0 {
 		return ""
 	}
@@ -369,7 +374,9 @@ func bindArgs(args []ir.Arg) string {
 	var b strings.Builder
 
 	for i := range args {
-		fmt.Fprintf(&b, ",\n\t\targ.%s", exportedName(args[i].Name))
+		field := "arg." + exportedName(args[i].Name)
+
+		fmt.Fprintf(&b, ",\n\t\t%s", bindValue(field, binders[args[i].Name]))
 	}
 
 	return b.String() + ",\n\t"

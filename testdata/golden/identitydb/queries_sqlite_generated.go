@@ -453,6 +453,36 @@ func newSQLite(prefix string) *sqliteQueries {
 	}
 }
 
+// timeText renders a time argument as the text this engine stores timestamps as.
+//
+// This engine has no date type: a DATETIME column holds text, and a comparison
+// between two of them compares two strings. What a driver writes for a bound
+// time.Time is Go's own rendering of it, whose leading characters happen to be
+// the stored shape — but only while the value is UTC. A time carrying any other
+// zone puts its own wall clock in those leading characters, so every window
+// comparison is off by that offset, silently, and only for the callers whose
+// clock is not UTC.
+//
+// Converting here is what makes the bound text the stored shape by
+// construction rather than by accident, whatever zone the caller's time
+// carries. The layout is whole seconds, which is what CURRENT_TIMESTAMP writes,
+// so a bound value and a stored one are one shape rather than two that sort
+// alike — which does mean a sub-second time bound here is stored truncated to
+// the second on this engine.
+func timeText(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+// timeTextPtr is timeText for a nullable argument. It preserves nil, so a
+// field the caller left unset still binds NULL rather than the zero time.
+func timeTextPtr(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+
+	return timeText(*t)
+}
+
 // ArchiveAccount runs the :execrows query against sqlite.
 func (q *sqliteQueries) ArchiveAccount(ctx context.Context, db DBTX, arg ArchiveAccountParams) (int64, error) {
 	result, err := db.ExecContext(ctx, q.archiveAccount,
@@ -499,7 +529,7 @@ func (q *sqliteQueries) CreateAccount(ctx context.Context, db DBTX, arg CreateAc
 		arg.BillingStatus,
 		arg.SubscriptionPlanID,
 		arg.PaymentProcessorCustomerID,
-		arg.LastPaymentProviderSyncedAt,
+		timeTextPtr(arg.LastPaymentProviderSyncedAt),
 		arg.AddressLine1,
 		arg.AddressLine2,
 		arg.AddressCity,
@@ -526,7 +556,7 @@ func (q *sqliteQueries) CreateInvitation(ctx context.Context, db DBTX, arg Creat
 		arg.Token,
 		arg.Status,
 		arg.Note,
-		arg.ExpiresAt,
+		timeText(arg.ExpiresAt),
 	)
 
 	return err
@@ -543,15 +573,15 @@ func (q *sqliteQueries) CreateUser(ctx context.Context, db DBTX, arg CreateUserP
 		arg.LastName,
 		arg.HashedPassword,
 		arg.RequiresPasswordChange,
-		arg.PasswordLastChangedAt,
+		timeTextPtr(arg.PasswordLastChangedAt),
 		arg.TwoFactorSecret,
-		arg.TwoFactorSecretVerifiedAt,
-		arg.EmailAddressVerifiedAt,
+		timeTextPtr(arg.TwoFactorSecretVerifiedAt),
+		timeTextPtr(arg.EmailAddressVerifiedAt),
 		arg.EmailAddressVerificationToken,
 		arg.AccountStatus,
 		arg.AccountStatusExplanation,
-		arg.LastAcceptedTermsOfService,
-		arg.LastAcceptedPrivacyPolicy,
+		timeTextPtr(arg.LastAcceptedTermsOfService),
+		timeTextPtr(arg.LastAcceptedPrivacyPolicy),
 	)
 
 	return err
@@ -658,10 +688,10 @@ func (q *sqliteQueries) GetUser(ctx context.Context, db DBTX, arg GetUserParams)
 // ListAccounts runs the :many query against sqlite.
 func (q *sqliteQueries) ListAccounts(ctx context.Context, db DBTX, arg ListAccountsParams) ([]ListAccountsRow, error) {
 	rows, err := db.QueryContext(ctx, q.listAccounts,
-		arg.CreatedAfter,
-		arg.CreatedBefore,
-		arg.UpdatedAfter,
-		arg.UpdatedBefore,
+		timeTextPtr(arg.CreatedAfter),
+		timeTextPtr(arg.CreatedBefore),
+		timeTextPtr(arg.UpdatedAfter),
+		timeTextPtr(arg.UpdatedBefore),
 		arg.IncludeArchived,
 		arg.Scope,
 		arg.PageCursor,
@@ -717,10 +747,10 @@ func (q *sqliteQueries) ListAccounts(ctx context.Context, db DBTX, arg ListAccou
 // ListInvitations runs the :many query against sqlite.
 func (q *sqliteQueries) ListInvitations(ctx context.Context, db DBTX, arg ListInvitationsParams) ([]ListInvitationsRow, error) {
 	rows, err := db.QueryContext(ctx, q.listInvitations,
-		arg.CreatedAfter,
-		arg.CreatedBefore,
-		arg.UpdatedAfter,
-		arg.UpdatedBefore,
+		timeTextPtr(arg.CreatedAfter),
+		timeTextPtr(arg.CreatedBefore),
+		timeTextPtr(arg.UpdatedAfter),
+		timeTextPtr(arg.UpdatedBefore),
 		arg.IncludeArchived,
 		arg.Scope,
 		arg.PageCursor,
@@ -814,10 +844,10 @@ func (q *sqliteQueries) ListRolesForUsers(ctx context.Context, db DBTX, arg List
 // ListUsers runs the :many query against sqlite.
 func (q *sqliteQueries) ListUsers(ctx context.Context, db DBTX, arg ListUsersParams) ([]ListUsersRow, error) {
 	rows, err := db.QueryContext(ctx, q.listUsers,
-		arg.CreatedAfter,
-		arg.CreatedBefore,
-		arg.UpdatedAfter,
-		arg.UpdatedBefore,
+		timeTextPtr(arg.CreatedAfter),
+		timeTextPtr(arg.CreatedBefore),
+		timeTextPtr(arg.UpdatedAfter),
+		timeTextPtr(arg.UpdatedBefore),
 		arg.IncludeArchived,
 		arg.Scope,
 		arg.PageCursor,
@@ -900,7 +930,7 @@ func (q *sqliteQueries) UpdateUser(ctx context.Context, db DBTX, arg UpdateUserP
 		arg.EmailAddress,
 		arg.FirstName,
 		arg.LastName,
-		arg.EmailAddressVerifiedAt,
+		timeTextPtr(arg.EmailAddressVerifiedAt),
 		arg.ID,
 		arg.Scope,
 	)
