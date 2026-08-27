@@ -1,4 +1,4 @@
-// Command main is unison's entrypoint.
+// Command unison is unison's entrypoint.
 //
 // It sets up a context that is cancelled on SIGINT/SIGTERM and hands off to the
 // CLI. cobra prints any command error to stderr; a non-nil result exits with a

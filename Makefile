@@ -6,7 +6,7 @@ MY_GROUP := $(shell id -g)
 # PATHS
 THIS          := github.com/primandproper/sqlc-gen-unison
 BINARY_NAME   := unison
-CMD_PACKAGE   := $(THIS)/cmd/main
+CMD_PACKAGE   := $(THIS)/cmd/unison
 ARTIFACTS_DIR := artifacts
 SCRIPTS_DIR   := scripts
 COVERAGE_OUT  := $(ARTIFACTS_DIR)/coverage.out
