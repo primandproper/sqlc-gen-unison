@@ -47,6 +47,7 @@ func Package(logger *slog.Logger, request *pb.GenerateRequest, opts *options.Opt
 		SQLCVersion:   request.GetSqlcVersion(),
 		UnisonVersion: unisonVersion,
 		NullAs:        string(opts.NullAs),
+		TimeLayout:    timeLayout(dialect),
 		TablePrefix:   opts.TablePrefixVar,
 	}
 

@@ -308,6 +308,72 @@ func runQuerierSuite(t *testing.T, ctx context.Context, e env) {
 		must.NoError(t, nilErr)
 		test.SliceEmpty(t, nilled)
 	})
+
+	t.Run("a zoned time argument binds as the instant it names", func(t *testing.T) {
+		// The class that survives everything else in this repository. SQLite
+		// has no date type: a DATETIME column holds text, and a comparison
+		// against one compares two strings. A bound time.Time reaches the
+		// engine as whatever the driver renders it, and that rendering's
+		// leading characters are the stored shape only while the value is UTC
+		// — so a caller whose clock is not UTC compares their wall clock
+		// against a UTC one, every window is off by their offset, and nothing
+		// reports an error. The other two engines have a timestamp type and are
+		// unharmed, which is exactly what makes it invisible unless the case
+		// runs on all three.
+		//
+		// Both zones below are extremes and neither is the host's, so nothing
+		// here depends on where the suite runs.
+		east := time.FixedZone("east-of-utc", 14*60*60)
+		west := time.FixedZone("west-of-utc", -12*60*60)
+
+		// The window is built around a timestamp the server itself wrote rather
+		// than around this process's clock, so the assertion says nothing about
+		// either machine's idea of what time it is.
+		anchor, anchorErr := q.GetUser(ctx, e.db, identitydb.GetUserParams{ID: "u1", Scope: "acme"})
+		must.NoError(t, anchorErr)
+
+		since := anchor.CreatedAt.Add(-time.Minute).In(east)
+		until := anchor.CreatedAt.Add(time.Minute).In(west)
+
+		// A lower bound a minute before the rows were written matches all of
+		// them, whatever zone it carries. Bound as it stands, the eastern
+		// rendering reads fourteen hours into the future and this finds none.
+		matched, matchedErr := q.ListUsers(ctx, e.db, identitydb.ListUsersParams{
+			Scope: "acme", IncludeArchived: true, ResultLimit: 10,
+			CreatedAfter: &since,
+		})
+		must.NoError(t, matchedErr)
+		must.SliceLen(t, 3, matched)
+
+		// A lower bound a minute after them matches none. That is the same
+		// claim from the other side, and it is what a formatter that dropped
+		// the argument rather than spelling it would fail.
+		none, noneErr := q.ListUsers(ctx, e.db, identitydb.ListUsersParams{
+			Scope: "acme", IncludeArchived: true, ResultLimit: 10,
+			CreatedAfter: &until,
+		})
+		must.NoError(t, noneErr)
+		test.SliceEmpty(t, none)
+
+		// And the same for a time the caller writes rather than one the engine
+		// did: a non-null argument in a zone of its own has to come back the
+		// instant it went in.
+		expires := time.Date(2031, 7, 4, 9, 30, 0, 0, east)
+
+		must.NoError(t, q.CreateInvitation(ctx, e.db, identitydb.CreateInvitationParams{
+			ID: "i1", Scope: "acme", BelongsToAccount: "a1", FromUser: "u1",
+			ToEmail: "invitee@example.com", ToName: "invitee",
+			Token: "token-i1", Status: "pending", Note: "note-i1",
+			ExpiresAt: expires,
+		}))
+
+		invitation, invitationErr := q.GetInvitation(ctx, e.db,
+			identitydb.GetInvitationParams{ID: "i1", Scope: "acme"})
+		must.NoError(t, invitationErr)
+
+		test.True(t, expires.Equal(invitation.ExpiresAt),
+			test.Sprintf("want %s, got %s", expires.UTC(), invitation.ExpiresAt.UTC()))
+	})
 }
 
 // newUser builds a user whose every string field is distinct, so that a

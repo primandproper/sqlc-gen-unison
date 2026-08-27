@@ -198,12 +198,22 @@ type Arg struct {
 }
 
 // Package is everything an emitter needs for one invocation.
+//
+// TimeLayout is the one field that needs explaining. It is empty for an engine
+// that has a timestamp type, and set to the text layout the engine stores and
+// compares timestamps in for an engine that does not. SQLite is that engine: a
+// DATETIME column holds text, and comparing two of them compares two strings,
+// so a bound time has to arrive already spelled the way the stored ones are.
+// Which engine that is belongs here rather than in an emitter, for the same
+// reason Arg.Placeholder does — an emitter renders shapes and knows nothing
+// about engines.
 type Package struct {
 	Name          string
 	Dialect       string
 	SQLCVersion   string
 	UnisonVersion string
 	NullAs        string
+	TimeLayout    string
 	Roster        []string
 	Queries       []Query
 	Statements    []Statement

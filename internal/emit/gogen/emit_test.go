@@ -1,6 +1,7 @@
 package gogen
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,10 +193,6 @@ func TestEmitNullSQL(t *testing.T) {
 }
 
 // TestEmittedFixtureCompiles builds both nullable styles.
-//
-// Emit already runs go/format, so a parse error would surface without this.
-// What this adds is the type checker: a missing import or a name that does not
-// resolve parses perfectly well.
 func TestEmittedFixtureCompiles(t *testing.T) {
 	t.Parallel()
 
@@ -203,29 +200,44 @@ func TestEmittedFixtureCompiles(t *testing.T) {
 		t.Run(string(style), func(t *testing.T) {
 			t.Parallel()
 
-			dir := t.TempDir()
-
 			// Every dialect in the roster, into one directory — which is what a
 			// real run does, and what the shared files are written to assume.
 			// One dialect's output alone deliberately does not compile: db_generated.go
 			// names a constructor per dialect.
+			files := map[string]string{}
+
 			for _, dialect := range fixture(style, "").Roster {
-				for name, contents := range emitted(t, fixture(style, dialect)) {
-					must.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600))
-				}
+				maps.Copy(files, emitted(t, fixture(style, dialect)))
 			}
 
-			must.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-				[]byte("module unisonfixture\n\ngo 1.27\n"), 0o600))
-
-			cmd := exec.CommandContext(t.Context(), "go", "build", "./...")
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
-
-			output, err := cmd.CombinedOutput()
-			must.NoError(t, err, must.Sprintf("the fixture did not compile:\n%s", output))
+			compile(t, files)
 		})
 	}
+}
+
+// compile type-checks an emitted package.
+//
+// Emit already runs go/format, so a parse error surfaces without this. What
+// this adds is the type checker: a missing import or a name that does not
+// resolve parses perfectly well.
+func compile(t *testing.T, files map[string]string) {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	for name, contents := range files {
+		must.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600))
+	}
+
+	must.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module unisonfixture\n\ngo 1.27\n"), 0o600))
+
+	cmd := exec.CommandContext(t.Context(), "go", "build", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
+
+	output, err := cmd.CombinedOutput()
+	must.NoError(t, err, must.Sprintf("the fixture did not compile:\n%s", output))
 }
 
 // emitted renders a package and returns its files by name.

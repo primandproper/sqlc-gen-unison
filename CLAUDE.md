@@ -79,6 +79,17 @@ the reason two sections down.
   is why `renderConfig` emits `env: [UNISON_LOG_LEVEL]`, and
   `TestLogLevelReachesPluginMode` pins it. sqlc also discards a plugin's stderr on success,
   surfacing it only inside the error when a plugin fails.
+- **SQLite has no date type, so a bound `time.Time` is compared as whatever the driver spells it.**
+  A DATETIME column holds text and comparing two of them compares two strings. modernc renders a
+  bound `time.Time` as Go's `String()` — `2026-08-26 04:04:37.49 +0000 UTC` — whose leading
+  characters are the stored `CURRENT_TIMESTAMP` shape *only while the value is UTC*. A zoned time
+  puts its own wall clock in those characters, so every window comparison is off by the offset,
+  silently, and only for the callers whose clock is not UTC. `ir.Package.TimeLayout` carries the
+  layout for the engines that need one — SQLite is the whole list — and `gogen`'s `timeText` wraps
+  every time argument so the bound text is the stored shape by construction. It is whole seconds,
+  which is what `CURRENT_TIMESTAMP` writes, so a sub-second time bound on SQLite is stored
+  truncated. Postgres and MySQL have a timestamp type and emit none of this, which is exactly what
+  makes the bug invisible unless the execution suite runs on all three.
 - **Postgres reports built-ins as `pg_catalog.*`**; the type mapper strips that prefix.
 - **The Postgres catalog carries all of `information_schema` and `pg_catalog`** — several hundred
   tables, including ones named `columns` and `tables`. Prefix marking filters to the catalog's
